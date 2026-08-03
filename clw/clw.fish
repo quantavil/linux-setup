@@ -32,7 +32,7 @@ function clw --description "Schedule a one-shot Claude Code run via systemd-run"
     end
 
     # Bare HH:MM means "today" -- prefix today's date so it fires once, not daily
-    if string match -qr '^\d{1,2}:\d{2}(:\d{2})?$' -- "$when"
+    if string match -qr '^\d{1,2}:\d{1,2}(:\d{1,2})?$' -- "$when"
         set when (date +%Y-%m-%d)" $when"
     end
 
