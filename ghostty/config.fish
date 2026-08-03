@@ -161,3 +161,54 @@ end
 function pacsize-fzf
     pacman -Qi | awk '/^Name/{n=$3}/^Installed Size/{print $4,$5,n}' | sort -rh | fzf
 end
+
+# ==============================================================================
+# CLAUDE CODE ONE-SHOT SCHEDULER (SYSTEMD TIMER WRAPPER)
+# ==============================================================================
+
+# Schedule a one-time Claude Code run (auto-approve mode) in the current dir.
+# Usage: claude-at [HH:MM | "YYYY-MM-DD HH:MM"] ["prompt text"]
+# Missing args are prompted for interactively.
+function claude-at
+    set -l when $argv[1]
+    set -l prompt (string join ' ' $argv[2..-1])
+
+    if test -z "$when"
+        read -P "Run at (HH:MM, today unless a date is given): " when
+    end
+    if test -z "$prompt"
+        read -P "Prompt: " prompt
+    end
+
+    # Bare HH:MM means "today" -- prefix today's date so it fires once, not daily
+    if string match -qr '^\d{1,2}:\d{2}(:\d{2})?$' -- "$when"
+        set when (date +%Y-%m-%d)" $when"
+    end
+
+    set -l dir (pwd)
+    set -l unit "claude-"(path basename $dir)"-"(date +%s)
+
+    if systemd-run --user \
+        --unit=$unit \
+        --on-calendar="$when" \
+        --working-directory="$dir" \
+        -- claude --dangerously-skip-permissions -p "$prompt"
+        echo "Scheduled '$unit.timer' for $when in $dir"
+        echo "Watch:  journalctl --user -u $unit -f"
+        echo "Cancel: systemctl --user stop $unit.timer"
+    end
+end
+
+# List pending claude-at jobs
+function claude-jobs
+    systemctl --user list-timers 'claude-*'
+end
+
+# Fuzzy-cancel a pending claude-at job
+function claude-cancel
+    set -l unit (systemctl --user list-timers --no-legend 'claude-*' | grep -oE 'claude-\S+\.timer' | fzf)
+    if test -n "$unit"
+        systemctl --user stop $unit
+        echo "Cancelled $unit"
+    end
+end
