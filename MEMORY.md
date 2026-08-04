@@ -17,6 +17,7 @@ A collection of standalone utilities, configuration scripts, and customization s
 - `kde-shortcuts/`      # KDE Plasma keyboard shortcuts cheatsheet (renamed from shortcut/)
 - `mpv/`                # MPV media player configurations
 - `ms-fonts/`           # Microsoft Fonts installation helpers
+- `tauri-webkit-lag/`   # Fix for laggy Tauri/WebKitGTK apps (DMA-BUF renderer + KWin latency)
 - `MEMORY.md`           # This memory file
 
 ## Conventions
