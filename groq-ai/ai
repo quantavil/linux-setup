@@ -1,0 +1,807 @@
+#!/usr/bin/env bash
+# ══════════════════════════════════════════════════════════════════
+# Groq AI — Unified CLI Assistant & Global Voice Typing
+# ══════════════════════════════════════════════════════════════════
+# Combines:
+#   • Streaming LLM chat with conversation memory & rolling summarization
+#   • Global voice typing directly into any focused window (browser, apps)
+#   • Voice-to-chat mode (dictate prompt -> direct streaming LLM answer)
+#
+# Dependencies:
+#   Required:   curl, jq
+#   Voice STT:  pipewire-audio (pw-record), opus-tools (opusenc),
+#               wl-clipboard (wl-copy), libnotify (notify-send), wtype
+# ══════════════════════════════════════════════════════════════════
+
+set -uo pipefail
+
+# ── Paths & Defaults ──────────────────────────────────────────────
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/groq-ai"
+LEGACY_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/groq-cli"
+CONFIG_FILE="$CONFIG_DIR/config.json"
+HISTORY_FILE="$CONFIG_DIR/history.json"
+
+DEFAULT_CHAT_MODEL="qwen/qwen3.6-27b"
+DEFAULT_SEARCH_MODEL="groq/compound-mini"
+DEFAULT_STT_MODEL="whisper-large-v3-turbo"
+DEFAULT_STT_LANG="en"
+DEFAULT_MAX_DURATION=60
+
+API_BASE="https://api.groq.com/openai/v1"
+CONTEXT_THRESHOLD=80000   # chars (~20K tokens)
+EXPIRY_SECONDS=10800      # 3 hours
+KEEP_RECENT=8             # exchanges to keep verbatim during summarization
+
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+# ── State files for Voice STT (RAM-backed runtime directory) ──────
+STT_PID_FILE="$XDG_RUNTIME_DIR/groq_stt.pid"
+STT_AUDIO_WAV="$XDG_RUNTIME_DIR/groq_stt.wav"
+STT_AUDIO_OPUS="$XDG_RUNTIME_DIR/groq_stt.opus"
+STT_LOCK_FILE="$XDG_RUNTIME_DIR/groq_stt.lock"
+
+# ── History Locking & Cleanup ─────────────────────────────────────
+HOLDS_LOCK=0
+TMP_FILES=""
+
+add_tmp() { TMP_FILES="$TMP_FILES $1"; }
+
+lock_history() {
+    local lock_dir="$HISTORY_FILE.lock"
+    local retry=0
+    while ! mkdir "$lock_dir" 2>/dev/null; do
+        if [[ "$retry" -eq 10 ]]; then
+            printf 'Waiting for history lock...\n' >&2
+        fi
+        if [[ "$retry" -ge 30 ]]; then
+            printf 'Failed to acquire history lock. Another instance of ai may be running.\n' >&2
+            exit 1
+        fi
+        sleep 0.1
+        retry=$((retry + 1))
+    done
+    HOLDS_LOCK=1
+}
+
+unlock_history() {
+    [[ "$HOLDS_LOCK" -eq 1 ]] || return 0
+    rmdir "$HISTORY_FILE.lock" 2>/dev/null || true
+    HOLDS_LOCK=0
+}
+
+cleanup() {
+    [[ -z "$TMP_FILES" ]] || rm -f $TMP_FILES
+    unlock_history
+}
+trap cleanup EXIT
+
+die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+stt_notify() { notify-send -a "Groq AI" "$1" "$2"; }
+
+# ── Configuration Loader (Single jq call) ─────────────────────────
+API_KEY="${GROQ_API_KEY:-}"
+CHAT_MODEL=""
+SEARCH_MODEL=""
+SYSTEM_PROMPT=""
+STT_MODEL=""
+STT_LANG=""
+MAX_DURATION=""
+AUTO_TYPE=""
+
+load_config() {
+    local active_conf=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        active_conf="$CONFIG_FILE"
+    elif [[ -f "$LEGACY_CONFIG_DIR/config.json" ]]; then
+        active_conf="$LEGACY_CONFIG_DIR/config.json"
+    fi
+
+    if [[ -n "$active_conf" ]]; then
+        eval "$(jq -r 'to_entries[] | "CONF_\(.key)=\(@sh "\(.value)")"' "$active_conf" 2>/dev/null || true)"
+        [[ -n "${CONF_api_key:-}" && -z "$API_KEY" ]] && API_KEY="$CONF_api_key"
+        [[ -n "${CONF_chat_model:-}" ]] && CHAT_MODEL="$CONF_chat_model"
+        [[ -n "${CONF_model:-}" && -z "$CHAT_MODEL" ]] && CHAT_MODEL="$CONF_model"
+        [[ -n "${CONF_search_model:-}" ]] && SEARCH_MODEL="$CONF_search_model"
+        [[ -n "${CONF_system_prompt:-}" ]] && SYSTEM_PROMPT="$CONF_system_prompt"
+        [[ -n "${CONF_stt_model:-}" ]] && STT_MODEL="$CONF_stt_model"
+        [[ -n "${CONF_stt_language:-}" ]] && STT_LANG="$CONF_stt_language"
+        [[ -n "${CONF_stt_max_duration:-}" ]] && MAX_DURATION="$CONF_stt_max_duration"
+        [[ -n "${CONF_auto_type:-}" ]] && AUTO_TYPE="$CONF_auto_type"
+    fi
+
+    [[ -n "$CHAT_MODEL" ]] || CHAT_MODEL="$DEFAULT_CHAT_MODEL"
+    [[ -n "$SEARCH_MODEL" ]] || SEARCH_MODEL="$DEFAULT_SEARCH_MODEL"
+    [[ -n "$STT_MODEL" ]] || STT_MODEL="$DEFAULT_STT_MODEL"
+    [[ -n "$STT_LANG" ]] || STT_LANG="$DEFAULT_STT_LANG"
+    [[ -n "$MAX_DURATION" ]] || MAX_DURATION="$DEFAULT_MAX_DURATION"
+    [[ -n "$AUTO_TYPE" ]] || AUTO_TYPE="true"
+}
+
+# ── Interactive Configuration Setup ───────────────────────────────
+run_configure() {
+    printf '═══════════════════════════════════════════════════\n'
+    printf '        Groq AI — Configuration Setup              \n'
+    printf '═══════════════════════════════════════════════════\n'
+
+    printf 'Enter your Groq API Key: '
+    local stty_orig
+    stty_orig=$(stty -g 2>/dev/null || true)
+    stty -echo 2>/dev/null || true
+    read -r key
+    stty "$stty_orig" 2>/dev/null || true
+    printf '\n'
+    [[ -n "$key" ]] || die "API key cannot be empty."
+
+    printf 'Validating API key & fetching models... '
+    local hdr_conf
+    hdr_conf=$(mktemp) || die "Failed to create temp file."
+    add_tmp "$hdr_conf"
+    ( umask 077; printf 'Authorization: Bearer %s\n' "$key" > "$hdr_conf" )
+
+    local resp code body
+    resp=$(curl -sS -m 30 -w '\n%{http_code}' \
+        -H "Content-Type: application/json" \
+        -H @"$hdr_conf" "$API_BASE/models")
+    code="${resp##*$'\n'}"
+    body="${resp%$'\n'*}"
+    rm -f "$hdr_conf"
+
+    if [[ "$code" != "200" ]]; then
+        printf 'failed\n'
+        local err
+        err=$(printf '%s' "$body" | jq -r '.error.message // "Unknown error"')
+        die "Groq error: $err"
+    fi
+    printf 'verified!\n\n'
+
+    local models sel
+    models=$(printf '%s' "$body" | jq -r \
+        '.data[].id | select(test("whisper|guard|tts|distil";"i")|not)' | sort)
+
+    if command -v fzf >/dev/null 2>&1; then
+        sel=$(printf '%s\n' "$models" | fzf --header='Select default Chat model:')
+    else
+        printf 'Available chat models:\n'
+        local i=1
+        while IFS= read -r m; do
+            printf '%2d) %s\n' "$i" "$m"
+            i=$((i + 1))
+        done <<< "$models"
+        printf '\nEnter number: '; read -r n
+        local num_models
+        num_models=$(printf '%s\n' "$models" | wc -l)
+        if [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -ge 1 ]] && [[ "$n" -le "$num_models" ]]; then
+            sel=$(printf '%s\n' "$models" | sed -n "${n}p")
+        else
+            die "Invalid selection: $n"
+        fi
+    fi
+    [[ -n "$sel" ]] || die "No model selected."
+
+    printf 'Optional default system prompt (Enter to skip): '
+    read -r sys
+
+    printf 'Auto-type voice transcripts into active window? (Y/n) [default: Y]: '
+    read -r autotype_choice
+    local auto_type_val="true"
+    [[ "$autotype_choice" =~ ^[Nn] ]] && auto_type_val="false"
+
+    mkdir -p "$CONFIG_DIR"
+    local tmp_conf
+    tmp_conf=$(mktemp "$CONFIG_FILE.tmp.XXXXXX") || die "Failed to create temporary config."
+    if ( umask 077; jq -n \
+        --arg key "$key" \
+        --arg mod "$sel" \
+        --arg smod "$DEFAULT_SEARCH_MODEL" \
+        --arg sys "$sys" \
+        --arg stt "$DEFAULT_STT_MODEL" \
+        --arg lang "$DEFAULT_STT_LANG" \
+        --argjson dur "$DEFAULT_MAX_DURATION" \
+        --argjson at "$auto_type_val" \
+        '{
+            api_key: $key,
+            chat_model: $mod,
+            search_model: $smod,
+            system_prompt: $sys,
+            stt_model: $stt,
+            stt_language: $lang,
+            stt_max_duration: $dur,
+            auto_type: $at
+        }' > "$tmp_conf" ); then
+        mv -f "$tmp_conf" "$CONFIG_FILE"
+    else
+        rm -f "$tmp_conf"
+        die "Failed to save configuration."
+    fi
+
+    printf '\nConfiguration successfully saved to %s\n' "$CONFIG_FILE"
+}
+
+# ── Global Voice Typing & Dictation ───────────────────────────────
+voice_stt_cleanup() {
+    rm -f "$STT_PID_FILE" "$STT_AUDIO_WAV" "$STT_AUDIO_OPUS" "$STT_LOCK_FILE"
+}
+
+run_voice_toggle() {
+    local mode="${1:-type}"   # "type" (paste into window) or "chat" (feed to LLM)
+
+    for cmd in pw-record curl jq wl-copy notify-send; do
+        command -v "$cmd" >/dev/null 2>&1 || {
+            stt_notify "Error" "Missing required command: $cmd"
+            die "$cmd is required for voice typing."
+        }
+    done
+
+    # ─────────────────────────────────────────────────────────────
+    # STOP path: PID file exists → stop recording & transcribe
+    # ─────────────────────────────────────────────────────────────
+    if [[ -f "$STT_PID_FILE" ]]; then
+        local rec_pid fuse_pid saved_mode
+        read -r rec_pid fuse_pid saved_mode < "$STT_PID_FILE"
+        rm -f "$STT_PID_FILE"
+
+        # Kill fuse watchdog
+        [[ -n "${fuse_pid:-}" && "$fuse_pid" != "$$" ]] && kill "$fuse_pid" 2>/dev/null || true
+
+        # Stop recorder
+        if kill -0 "$rec_pid" 2>/dev/null; then
+            kill "$rec_pid" 2>/dev/null
+            sleep 0.2
+        else
+            voice_stt_cleanup
+            stt_notify "Voice Typing" "Recording was already stopped."
+            return 0
+        fi
+
+        # Prevent double-transcription race
+        [[ -f "$STT_LOCK_FILE" ]] && return 0
+        touch "$STT_LOCK_FILE"
+
+        [[ ! -f "$STT_AUDIO_WAV" ]] && { voice_stt_cleanup; stt_notify "Voice Error" "Audio recording file missing"; return 1; }
+
+        stt_notify "⏳ Transcribing…" "Processing voice input…"
+
+        # Compress WAV → Opus if opusenc is available
+        local upload_file="$STT_AUDIO_WAV"
+        if command -v opusenc >/dev/null 2>&1; then
+            if opusenc "$STT_AUDIO_WAV" "$STT_AUDIO_OPUS" &>/dev/null; then
+                upload_file="$STT_AUDIO_OPUS"
+            fi
+        fi
+
+        # API Call to Whisper
+        local curl_out
+        curl_out=$(curl -sS -m 60 -X POST "$API_BASE/audio/transcriptions" \
+            -H "Authorization: Bearer $API_KEY" \
+            -F "file=@$upload_file" \
+            -F "model=$STT_MODEL" \
+            -F "language=$STT_LANG" \
+            -F "response_format=json" 2>/dev/null || true)
+
+        voice_stt_cleanup
+
+        if [[ -z "$curl_out" ]] || ! printf '%s' "$curl_out" | jq empty 2>/dev/null; then
+            stt_notify "Groq STT Error" "Server returned invalid response (check connection)"
+            return 1
+        fi
+
+        local text err_msg
+        text=$(printf '%s' "$curl_out" | jq -r '.text // empty')
+        err_msg=$(printf '%s' "$curl_out" | jq -r '.error.message // empty')
+
+        if [[ -n "$err_msg" ]]; then
+            stt_notify "Groq STT Error" "$err_msg"
+            return 1
+        fi
+
+        if [[ -z "$text" ]]; then
+            stt_notify "Voice Typing" "No speech detected (silence or noise)."
+            return 0
+        fi
+
+        # Strip leading and trailing whitespace
+        text="$(printf '%s' "$text" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+        # Always copy to clipboard
+        wl-copy -- "$text" 2>/dev/null || true
+
+        if [[ "$saved_mode" == "chat" ]]; then
+            stt_notify "🎙 Voice Query" "$text"
+            if [[ -t 1 ]]; then
+                printf '\n[Voice Prompt]: %s\n\n' "$text"
+            fi
+            send_query "$text"
+            return 0
+        fi
+
+        # Global Voice Typing (directly into focused window: browser, editor, etc.)
+        local typed=0
+        if [[ "$AUTO_TYPE" == "true" ]] && command -v wtype >/dev/null 2>&1; then
+            sleep 0.08
+            if wtype -- "$text" 2>/dev/null; then
+                typed=1
+            fi
+        fi
+
+        if [[ "$typed" -eq 1 ]]; then
+            stt_notify "✨ Voice Typed" "$text"
+        else
+            stt_notify "📋 Copied to Clipboard" "$text"
+        fi
+
+        if [[ -t 1 ]]; then
+            printf '%s\n' "$text"
+        fi
+        return 0
+    fi
+
+    # ─────────────────────────────────────────────────────────────
+    # START path: no PID file → begin recording
+    # ─────────────────────────────────────────────────────────────
+    [[ -f "$STT_LOCK_FILE" ]] && { stt_notify "Voice Typing" "Transcription in progress — please wait"; return 0; }
+    rm -f "$STT_AUDIO_WAV" "$STT_AUDIO_OPUS"
+
+    pw-record --rate 16000 --channels 1 --format s16 "$STT_AUDIO_WAV" &>/dev/null &
+    local rec_pid=$!
+    sleep 0.15
+
+    if ! kill -0 "$rec_pid" 2>/dev/null; then
+        stt_notify "Voice Error" "Failed to start pw-record"
+        return 1
+    fi
+
+    # Auto-stop fuse watchdog (preserves mode on timeout)
+    local stop_flag="-v"
+    [[ "$mode" == "chat" ]] && stop_flag="-V"
+    (
+        sleep "$MAX_DURATION"
+        if [[ -f "$STT_PID_FILE" ]] && [[ "$(cut -d' ' -f1 < "$STT_PID_FILE")" == "$rec_pid" ]]; then
+            stt_notify "⏰ Voice Timeout" "Auto-stopping: exceeded ${MAX_DURATION}s limit"
+            exec "$SELF" "$stop_flag"
+        fi
+    ) &>/dev/null &
+    local fuse_pid=$!
+    disown 2>/dev/null || true
+
+    echo "$rec_pid $fuse_pid $mode" > "$STT_PID_FILE"
+    if [[ "$mode" == "chat" ]]; then
+        stt_notify "🎙 Recording Voice Query…" "Speak prompt. Press shortcut again to send."
+    else
+        stt_notify "🎙 Recording Voice…" "Speak now. Press shortcut again to type/paste."
+    fi
+}
+
+# ── History & Context Management ──────────────────────────────────
+MESSAGES='[]'
+SUMMARY=""
+UPDATED_AT=0
+
+load_history() {
+    if [[ -f "$HISTORY_FILE" ]]; then
+        MESSAGES=$(jq -c '.messages // []' "$HISTORY_FILE" 2>/dev/null) || MESSAGES='[]'
+        SUMMARY=$(jq -r '.summary // "" | gsub("<(think|reasoning)>[\\s\\S]*?</(think|reasoning)>"; "")' "$HISTORY_FILE" 2>/dev/null) || SUMMARY=""
+        UPDATED_AT=$(jq -r '.updated_at // 0' "$HISTORY_FILE" 2>/dev/null) || UPDATED_AT=0
+    else
+        MESSAGES='[]'; SUMMARY=""; UPDATED_AT=0
+    fi
+    case "$UPDATED_AT" in
+        ""|*[!0-9]*) UPDATED_AT=0 ;;
+    esac
+}
+
+save_history() {
+    mkdir -p "$CONFIG_DIR"
+    local tmp_hist
+    tmp_hist=$(mktemp "$HISTORY_FILE.tmp.XXXXXX") || return
+    if ( umask 077; printf '%s' "$MESSAGES" | jq -c \
+        --arg summary "$SUMMARY" \
+        --argjson ts "$(date +%s)" \
+        '{summary: $summary, updated_at: $ts, messages: .}' > "$tmp_hist" ); then
+        mv -f "$tmp_hist" "$HISTORY_FILE"
+    else
+        rm -f "$tmp_hist"
+    fi
+}
+
+check_expiry() {
+    [[ "$UPDATED_AT" -eq 0 ]] && return
+    local now age hrs mins
+    now=$(date +%s)
+    age=$((now - UPDATED_AT))
+    [[ "$age" -le "$EXPIRY_SECONDS" ]] && return
+    hrs=$((age / 3600))
+    mins=$(( (age % 3600) / 60 ))
+    if [[ "$hrs" -gt 0 ]]; then
+        printf '(Session idle %dh %dm. Use -n to start fresh.)\n' "$hrs" "$mins" >&2
+    else
+        printf '(Session idle %dm. Use -n to start fresh.)\n' "$mins" >&2
+    fi
+}
+
+summarize_if_needed() {
+    local context_size msg_count summary_size sum_input keep_msgs old_msgs conv_text sum_payload sum_payload_file sum_resp
+    context_size=$(printf '%s%s' "$SUMMARY" "$(printf '%s' "$MESSAGES" | jq -r '.[].content // ""')" | wc -m)
+    [[ "$context_size" -le "$CONTEXT_THRESHOLD" ]] && return
+
+    msg_count=$(printf '%s' "$MESSAGES" | jq 'length')
+    if [[ "$msg_count" -le "$KEEP_RECENT" ]]; then
+        summary_size=$(printf '%s' "$SUMMARY" | wc -m)
+        if [[ "$summary_size" -gt $((CONTEXT_THRESHOLD * 8 / 10)) ]]; then
+            printf '(Condensing conversation summary...)\n' >&2
+            sum_input="Previous summary to condense:\n$SUMMARY"
+            keep_msgs="$MESSAGES"
+        else
+            return
+        fi
+    else
+        printf '(Summarizing older context...)\n' >&2
+        old_msgs=$(printf '%s' "$MESSAGES" | jq -c ".[:-$KEEP_RECENT]")
+        keep_msgs=$(printf '%s' "$MESSAGES" | jq -c ".[-$KEEP_RECENT:]")
+        conv_text=$(printf '%s' "$old_msgs" | jq -r 'map(.role + ": " + .content) | join("\n\n")')
+
+        if [[ -n "$SUMMARY" ]]; then
+            sum_input="Previous summary:\n$SUMMARY\n\nNew conversation to incorporate:\n$conv_text"
+        else
+            sum_input="$conv_text"
+        fi
+    fi
+
+    sum_payload=$(jq -cn \
+        --arg model "$CHAT_MODEL" \
+        --arg conv "$sum_input" \
+        '{model: $model, stream: false,
+          messages: [
+            {role: "system", content: "Summarize this conversation as extremely concise bullet points. Focus on: key facts, decisions made, code specifics, and pending items. Omit greetings and filler. Condense and merge older points to keep the total summary compact."},
+            {role: "user", content: $conv}
+          ]}')
+
+    sum_payload_file=$(mktemp) || return
+    add_tmp "$sum_payload_file"
+    printf '%s' "$sum_payload" > "$sum_payload_file"
+
+    local hdr_sum
+    hdr_sum=$(mktemp) || return
+    add_tmp "$hdr_sum"
+    ( umask 077; printf 'Authorization: Bearer %s\n' "$API_KEY" > "$hdr_sum" )
+
+    sum_resp=$(curl -sS -m 120 -X POST "$API_BASE/chat/completions" \
+        -H "Content-Type: application/json" \
+        -H 'Expect:' \
+        -H @"$hdr_sum" \
+        --data-binary "@$sum_payload_file" 2>/dev/null)
+
+    local curl_exit=$?
+    rm -f "$sum_payload_file" "$hdr_sum"
+
+    if [[ "$curl_exit" -eq 0 ]]; then
+        local new_summary
+        new_summary=$(printf '%s' "$sum_resp" | jq -r '.choices[0].message.content // "" | gsub("<(think|reasoning)>[\\s\\S]*?</(think|reasoning)>"; "") | sub("^[ \\n\\r\\t]+"; "") | sub("[ \\n\\r\\t]+$"; "")')
+        if [[ -n "$new_summary" ]]; then
+            SUMMARY="$new_summary"
+            MESSAGES="$keep_msgs"
+            printf '(Context summarized. Continuing with recent exchanges.)\n' >&2
+            return
+        fi
+    fi
+    printf '(Summarization failed. Continuing with full context.)\n' >&2
+}
+
+# ── Streaming Query Execution ─────────────────────────────────────
+send_query() {
+    local query="$1"
+    local use_history=1
+
+    [[ ! -t 0 ]] && use_history=0
+    [[ "$SEARCH_MODE" -eq 1 ]] && use_history=0
+
+    local active_model="$CHAT_MODEL"
+    [[ "$SEARCH_MODE" -eq 1 ]] && active_model="$SEARCH_MODEL"
+
+    if [[ "$use_history" -eq 1 ]]; then
+        lock_history
+        load_history
+        MESSAGES=$(printf '%s' "$MESSAGES" | jq -c --arg c "$query" '. + [{role:"user",content:$c}]')
+        summarize_if_needed
+    fi
+
+    local json_payload combined_sys=""
+    if [[ "$use_history" -eq 1 ]]; then
+        [[ -n "$SYSTEM_PROMPT" ]] && combined_sys="$SYSTEM_PROMPT"
+        if [[ -n "$SUMMARY" ]]; then
+            if [[ -n "$combined_sys" ]]; then
+                combined_sys="${combined_sys}"$'\n\n'"Previous conversation context:"$'\n'"${SUMMARY}"
+            else
+                combined_sys="Previous conversation context:"$'\n'"${SUMMARY}"
+            fi
+        fi
+
+        json_payload=$(jq -cn \
+            --arg model "$active_model" \
+            --arg sys "$combined_sys" \
+            --argjson msgs "$MESSAGES" \
+            '{model: $model, stream: true,
+              messages: (
+                (if $sys != "" then [{role:"system",content:$sys}] else [] end) +
+                $msgs
+              )}')
+    else
+        json_payload=$(jq -cn \
+            --arg model "$active_model" \
+            --arg sys "$SYSTEM_PROMPT" \
+            --arg msg "$query" \
+            '{model:$model, stream:true,
+              messages:(if $sys != "" then
+                [{role:"system",content:$sys},{role:"user",content:$msg}]
+              else
+                [{role:"user",content:$msg}]
+              end)}')
+    fi
+
+    local payload_file headers_file exit_code_file response_file hdr_auth
+    payload_file=$(mktemp) || die "Failed to create payload file."
+    headers_file=$(mktemp) || die "Failed to create headers file."
+    exit_code_file=$(mktemp) || die "Failed to create exit code file."
+    hdr_auth=$(mktemp) || die "Failed to create auth file."
+    add_tmp "$payload_file"; add_tmp "$headers_file"; add_tmp "$exit_code_file"; add_tmp "$hdr_auth"
+
+    ( umask 077; printf 'Authorization: Bearer %s\n' "$API_KEY" > "$hdr_auth" )
+    printf '%s' "$json_payload" > "$payload_file"
+
+    if [[ "$use_history" -eq 1 ]]; then
+        response_file=$(mktemp) || die "Failed to create response file."
+        add_tmp "$response_file"
+    fi
+
+    (
+        (
+            curl -sS -N -m 600 -X POST "$API_BASE/chat/completions" \
+                -D "$headers_file" \
+                -H "Content-Type: application/json" \
+                -H 'Expect:' \
+                -H @"$hdr_auth" \
+                --data-binary "@$payload_file"
+            echo $? > "$exit_code_file"
+        ) | {
+            first_line=""
+            while IFS= read -r line; do
+                if [[ -n "$line" ]]; then
+                    first_line="$line"
+                    break
+                fi
+            done
+
+            [[ -z "$first_line" ]] && exit 0
+
+            case "$first_line" in
+                data:*)
+                    ( printf '%s\n' "$first_line"; cat ) \
+                    | sed -nu '/^data: \[DONE\]/d; s/^data: //p' \
+                    | jq -n -j --unbuffered 'foreach inputs as $line ({thinking: false, started: false, buf: "", out: "", stop: false}; (( $line.choices[0].delta.content // $line.error.message // "" ) as $c | .buf += $c | .out = "" | .stop = false | until(.stop; if .thinking then if (.buf | contains("</think>")) then (.buf | index("</think>")) as $idx | .thinking = false | .buf = .buf[$idx + 8:] elif (.buf | contains("</reasoning>")) then (.buf | index("</reasoning>")) as $idx | .thinking = false | .buf = .buf[$idx + 12:] else .stop = true end else if (.buf | contains("<think>")) then (.buf | index("<think>")) as $idx | .thinking = true | .buf = .buf[$idx + 7:] elif (.buf | contains("<reasoning>")) then (.buf | index("<reasoning>")) as $idx | .thinking = true | .buf = .buf[$idx + 11:] else if (.buf | contains("<")) then (.buf | index("<")) as $idx | if $idx > 0 then .out += .buf[:$idx] | .buf = .buf[$idx:] elif (.buf | length > 12) then .out += "<" | .buf = .buf[1:] else .stop = true end else .out += .buf | .buf = "" | .stop = true end end end) | if .out != "" and (.started | not) then ((.out | sub("^[ \\n\\r\\t]+"; "")) as $s | if $s != "" then .started = true | .out = $s else .out = "" end) else . end); .out)'
+                    ;;
+                *)
+                    full_body=$(printf '%s\n' "$first_line"; cat)
+                    err_msg=$(printf '%s' "$full_body" | jq -r '.error.message // .message // "Unknown error"')
+                    printf 'Error: %s\n' "$err_msg" >&2
+                    echo "99" > "$exit_code_file"
+                    ;;
+            esac
+        }
+    ) | {
+        if [[ "$use_history" -eq 1 ]]; then
+            tee "$response_file"
+        else
+            cat
+        fi
+    }
+
+    local curl_exit_code
+    curl_exit_code=$(cat "$exit_code_file" 2>/dev/null || echo 0)
+    local http_status=""
+    if [[ -f "$headers_file" ]]; then
+        http_status=$(awk 'toupper($1) ~ /^HTTP/ {s=$2} END{print s}' "$headers_file")
+    fi
+
+    rm -f "$payload_file" "$headers_file" "$exit_code_file" "$hdr_auth"
+
+    if [[ "$curl_exit_code" -ne 0 ]] || { [[ -n "$http_status" ]] && [[ "$http_status" -ne 200 ]]; }; then
+        printf '\n'
+        if [[ "$use_history" -eq 1 ]]; then
+            rm -f "$response_file"
+            unlock_history
+        fi
+        return 1
+    fi
+
+    printf '\n'
+
+    if [[ "$use_history" -eq 1 ]]; then
+        local response
+        response=$(cat "$response_file" 2>/dev/null || true)
+        if [[ -n "$response" ]]; then
+            MESSAGES=$(printf '%s' "$MESSAGES" | jq -c --arg c "$response" '. + [{role:"assistant",content:$c}]')
+            save_history
+        fi
+        rm -f "$response_file"
+        unlock_history
+    fi
+}
+
+show_help() {
+    cat <<EOF
+Groq AI — Unified CLI Assistant & Global Voice Typing
+
+Basic Usage:
+  ai [prompt...]             Ask a question (continues conversation)
+  ai                         Launch interactive chat (when on terminal)
+  echo "..." | ai            Pipe input into prompt (no history)
+
+Voice Dictation:
+  ai -v                      Toggle Voice Typing (types into browser/focused window)
+  ai -V                      Toggle Voice Chat (transcribes & sends directly to LLM)
+
+Session & Search:
+  ai -n [prompt...]          Start new conversation (clears history)
+  ai -s [prompt...]          Web search (Groq compound-mini)
+  ai -p "prompt" [query...]  Override system prompt
+  ai --status                Show conversation context & token statistics
+  ai --config                Configure API key, models, and voice settings
+
+Options:
+  --version                  Show version info
+  -h, --help                 Show this help menu
+EOF
+}
+
+# ══════════════════════════════════════════════════════════════════
+# Entry Point & Option Parsing
+# ══════════════════════════════════════════════════════════════════
+
+SEARCH_MODE=0
+NEW_SESSION=0
+SHOW_STATUS=0
+RUN_CONFIG=0
+VOICE_MODE=""
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -v|--voice)
+            VOICE_MODE="type"; shift; break ;;
+        -V|--voice-chat)
+            VOICE_MODE="chat"; shift; break ;;
+        -s|--search)
+            SEARCH_MODE=1; shift ;;
+        -n|--new)
+            NEW_SESSION=1; shift ;;
+        -p|--system)
+            [[ "$#" -ge 2 ]] || die "Option $1 requires an argument."
+            SYSTEM_PROMPT="$2"; shift 2 ;;
+        --status)
+            SHOW_STATUS=1; shift ;;
+        --config|--configure)
+            RUN_CONFIG=1; shift ;;
+        --version)
+            echo "Groq AI version 2.0.0"; exit 0 ;;
+        -h|--help)
+            show_help; exit 0 ;;
+        --)
+            shift; break ;;
+        -*)
+            die "Unknown option: $1 (run 'ai --help' for usage)" ;;
+        *)
+            break ;;
+    esac
+done
+
+load_config
+
+# Run configuration if explicitly requested
+if [[ "$RUN_CONFIG" -eq 1 ]]; then
+    run_configure
+    exit 0
+fi
+
+# Run Voice STT if voice flag was detected
+if [[ -n "$VOICE_MODE" ]]; then
+    if [[ -z "$API_KEY" ]]; then
+        stt_notify "Groq STT" "Please configure API key first: ai --config"
+        die "Groq API key not configured. Run 'ai --config'."
+    fi
+    run_voice_toggle "$VOICE_MODE"
+    exit 0
+fi
+
+# Session Status
+if [[ "$SHOW_STATUS" -eq 1 ]]; then
+    if [[ ! -f "$HISTORY_FILE" ]]; then
+        echo "No conversation history."
+        exit 0
+    fi
+    load_history
+    msg_count=$(printf '%s' "$MESSAGES" | jq 'length')
+    exchanges=$(printf '%s' "$MESSAGES" | jq '[.[] | select(.role == "user")] | length')
+    total_chars=$(printf '%s%s' "$SUMMARY" "$(printf '%s' "$MESSAGES" | jq -r '.[].content // ""')" | wc -m)
+    est_tokens=$((total_chars / 4))
+
+    age_str="unknown"
+    if [[ "$UPDATED_AT" -gt 0 ]]; then
+        now=$(date +%s)
+        age=$((now - UPDATED_AT))
+        if [[ "$age" -lt 60 ]]; then
+            age_str="${age}s"
+        elif [[ "$age" -lt 3600 ]]; then
+            age_str="$((age / 60))m"
+        else
+            age_str="$((age / 3600))h $((age % 3600 / 60))m"
+        fi
+    fi
+
+    echo "Chat Model: $CHAT_MODEL"
+    echo "Messages:   $msg_count ($exchanges exchanges)"
+    echo "Context:    ~$est_tokens tokens (est.)"
+    echo "Age:        $age_str"
+    if [[ -n "$SUMMARY" ]]; then
+        printf 'Summary:    %s\n' "$(printf '%s' "$SUMMARY" | head -c 200)"
+    else
+        echo "Summary:    None"
+    fi
+    exit 0
+fi
+
+# Clear session
+if [[ "$NEW_SESSION" -eq 1 ]] && [[ "$#" -eq 0 ]] && [[ -t 0 ]]; then
+    rm -f "$HISTORY_FILE"
+    echo "Conversation cleared."
+    exit 0
+fi
+[[ "$NEW_SESSION" -eq 1 ]] && rm -f "$HISTORY_FILE"
+
+# If API key missing, run interactive configuration
+if [[ -z "$API_KEY" ]]; then
+    if [[ ! -t 0 ]]; then
+        die "No Groq API key configured. Run 'ai --config' to configure."
+    fi
+    echo "No Groq configuration found."
+    run_configure
+    load_config
+    [[ -n "$API_KEY" ]] || die "Configuration required to proceed."
+fi
+
+# ── Interactive REPL Mode (if no arguments on interactive terminal) ─
+if [[ "$#" -eq 0 ]] && [[ -t 0 ]]; then
+    load_history
+    check_expiry
+    printf 'Groq AI Interactive Chat (%s)\n' "$CHAT_MODEL"
+    printf 'Type your message, or type exit/quit to leave.\n\n'
+    while printf 'ai> ' && IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        case "$line" in
+            exit|quit|bye|:q) break ;;
+            clear|:c) rm -f "$HISTORY_FILE"; MESSAGES='[]'; SUMMARY=""; echo "Session cleared."; continue ;;
+        esac
+        send_query "$line"
+    done
+    exit 0
+fi
+
+# ── One-shot Prompt or Piped Stdin ─────────────────────────────────
+PROMPT="$*"
+if [[ ! -t 0 ]]; then
+    stdin_data=$(cat)
+    if [[ -n "$PROMPT" ]]; then
+        PROMPT="${stdin_data}"$'\n'"${PROMPT}"
+    else
+        PROMPT="$stdin_data"
+    fi
+fi
+
+[[ -n "$PROMPT" ]] || { show_help; exit 0; }
+
+if [[ "$SEARCH_MODE" -eq 0 ]]; then
+    load_history
+    check_expiry
+fi
+
+send_query "$PROMPT"

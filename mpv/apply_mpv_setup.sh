@@ -52,7 +52,7 @@ fi
 
 echo "Downloading material-osc from $LATEST_ZIP_URL..."
 curl -L "$LATEST_ZIP_URL" -o /tmp/material-osc.zip
-unzip -o /tmp/material-osc.zip -d ~/.config/mpv/scripts/
+unzip -o /tmp/material-osc.zip -d ~/.config/mpv/
 rm -f /tmp/material-osc.zip
 
 echo "Downloading thumbfast..."

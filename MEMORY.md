@@ -12,8 +12,7 @@ A collection of standalone utilities, configuration scripts, and customization s
 - `ghostty/`            # Setup/config files for Ghostty & Fish (renamed from ghostty-setup/)
 - `git-autosquash/`     # Git auto-squashing scripts
 - `git-autosync/`       # Automated git sync utilities
-- `groq-chat/`          # Groq CLI assistant ('ai') (extracted from ghostty-setup/)
-- `groq-stt/`           # Toggle-based Wayland speech-to-text script (renamed from stt-groq/)
+- `groq-ai/`            # Unified Groq CLI assistant & global Wayland voice typing ('ai -v')
 - `kde-shortcuts/`      # KDE Plasma keyboard shortcuts cheatsheet (renamed from shortcut/)
 - `mpv/`                # MPV media player configurations
 - `ms-fonts/`           # Microsoft Fonts installation helpers
@@ -28,7 +27,7 @@ A collection of standalone utilities, configuration scripts, and customization s
 ## Dependencies & Setup
 - Shell environments: Bash/Fish.
 - Python 3.x is used for some utilities (e.g. `aikular`).
-- `jq` and `curl` for the `ai` command CLI.
+- `jq` and `curl` for the `ai` command CLI; `pw-record`, `wl-copy`, `notify-send`, `opusenc`, `wtype` for voice typing.
 
 ## Critical Information
 - None currently.
@@ -41,6 +40,7 @@ A collection of standalone utilities, configuration scripts, and customization s
 - Sanitize summary on load (`load_history`) to clean up pre-existing `<think>` blocks in `history.json`.
 - To prevent EXIT trap from removing locks held by other concurrent instances, use a `HOLDS_LOCK` flag to track lock ownership.
 - Parse the last HTTP status line from headers (e.g. via `awk`) to avoid silent failure on `100 Continue` responses.
+- `wtype` enables global voice typing on Wayland (Hyprland / Omarchy) by injecting transcribed characters directly into the focused application (e.g. browser input box, text editor) without requiring manual clipboard paste.
 
 ## Blunders
 - **Blunder**: `jq: error: Cannot index boolean with string ("started")` during streaming.
@@ -53,9 +53,14 @@ A collection of standalone utilities, configuration scripts, and customization s
 - **Blunder**: Repetitive summary formatting loop occurred due to a persisted `<think>` block inside `history.json`'s summary field.
   - **Fix**: Added `gsub` sanitization to `load_history` to strip `<think>` tags on load.
 - **Blunder**: `jq: error (at <stdin>:...): Invalid numeric literal` when server streams non-JSON messages (like `event: error`).
+  - **Root Cause**: Unhandled non-JSON SSE lines printed to jq.
   - **Fix**: Changed `s/^data: //; p` to `s/^data: //p` in `sed` pipeline to only print lines starting with `data:`.
+- **Blunder**: `material-osc` in `apply_mpv_setup.sh` extracted scripts to `~/.config/mpv/scripts/scripts/` and fonts to `~/.config/mpv/scripts/fonts/`.
+  - **Root Cause**: `material-osc.zip` already root-packages `scripts/` and `fonts/` folders; extracting with `-d ~/.config/mpv/scripts/` nested them.
+  - **Fix**: Extracted to `-d ~/.config/mpv/` directly and moved existing files to proper locations.
 
 ## Structural Changes
+- Consolidated `groq-chat/` and `groq-stt/` into a single unified `groq-ai/` module with single `ai` CLI (`ai -v` for system-wide voice typing).
 - Moved `stt-groq/` from a standalone repository to `linux-setup/groq-stt/`.
 - Restructured workspace layout (Option A):
   - Extracted the `ai` CLI script from `ghostty-setup/` into `groq-chat/`.
@@ -63,4 +68,5 @@ A collection of standalone utilities, configuration scripts, and customization s
   - Renamed `ghostty-setup/` to `ghostty/`, `stt-groq/` to `groq-stt/`, `shortcut/` to `kde-shortcuts/`, and `wgcf/` to `cloudflare-warp/`.
   - Removed empty `browser-shortcuts/` and obsolete `bt/` directories.
   - Cleaned stray `'path: '` file from `adguard-home/`.
+
 
