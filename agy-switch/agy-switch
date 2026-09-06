@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""
+agy-switch: Fast, zero-overhead account switcher for Antigravity CLI (agy).
+Swaps active Pro credentials in system keyring and CLI cache without manual relogin.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+
+# Paths
+PROFILES_DIR = Path.home() / ".gemini" / "profiles"
+CURRENT_FILE = PROFILES_DIR / "current"
+CLI_TOKEN_FILE = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+KEYRING_SERVICE = "gemini"
+KEYRING_LABEL = "Password for 'antigravity' on 'gemini'"
+
+# Terminal colors
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+RED = "\033[31m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+
+
+def ensure_profile_dir(profile_id: str) -> Path:
+    p = PROFILES_DIR / str(profile_id)
+    p.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return p
+
+
+def get_keyring_token() -> str:
+    """Read active token from Linux Secret Service keyring."""
+    try:
+        r = subprocess.run(
+            ["secret-tool", "lookup", "service", KEYRING_SERVICE],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def set_keyring_token(secret_json: str) -> bool:
+    """Store token in Linux Secret Service keyring."""
+    if not secret_json:
+        return False
+    try:
+        r = subprocess.run(
+            ["secret-tool", "store", f"--label={KEYRING_LABEL}", "service", KEYRING_SERVICE],
+            input=secret_json,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def clear_keyring_token() -> bool:
+    try:
+        r = subprocess.run(
+            ["secret-tool", "clear", "service", KEYRING_SERVICE],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def fetch_native_email(access_token: str) -> str:
+    """Query Google OAuth userinfo endpoint natively with access token. Never guess."""
+    if not access_token:
+        return ""
+    try:
+        req = urllib.request.Request(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("email", "")
+    except Exception:
+        return ""
+
+
+def get_profile_token_data(profile_id: str) -> tuple[dict, str]:
+    """Load token dict and raw string for a profile."""
+    p_dir = PROFILES_DIR / str(profile_id)
+    token_file = p_dir / "token.json"
+    if not token_file.exists():
+        return {}, ""
+    try:
+        raw = token_file.read_text().strip()
+        return json.loads(raw), raw
+    except Exception:
+        return {}, ""
+
+
+def get_profile_email(profile_id: str, fetch_remote: bool = False) -> str:
+    """Retrieve verified email for a profile without guessing."""
+    p_dir = PROFILES_DIR / str(profile_id)
+    meta_file = p_dir / "profile.json"
+
+    # 1. Cached verified email
+    if meta_file.exists():
+        try:
+            d = json.loads(meta_file.read_text())
+            if d.get("email"):
+                return d["email"]
+        except Exception:
+            pass
+
+    # 2. Fetch natively if requested
+    if fetch_remote:
+        data, _ = get_profile_token_data(profile_id)
+        access_tok = data.get("token", {}).get("access_token", "")
+        email = fetch_native_email(access_tok)
+        if email:
+            save_profile_meta(profile_id, email)
+            return email
+
+    return ""
+
+
+def save_profile_meta(profile_id: str, email: str):
+    p_dir = ensure_profile_dir(profile_id)
+    meta = {
+        "profile": str(profile_id),
+        "email": email,
+        "updated_at": datetime.now().isoformat(),
+    }
+    (p_dir / "profile.json").write_text(json.dumps(meta, indent=2))
+
+
+def save_active_to_profile(profile_id: str):
+    """Snapshot current active credentials into profile storage."""
+    p_dir = ensure_profile_dir(profile_id)
+
+    # Prefer live keyring, fallback to file
+    raw_token = get_keyring_token()
+    if not raw_token and CLI_TOKEN_FILE.exists():
+        try:
+            raw_token = CLI_TOKEN_FILE.read_text().strip()
+        except Exception:
+            pass
+
+    if not raw_token:
+        return
+
+    # Write token.json
+    t_file = p_dir / "token.json"
+    t_file.write_text(raw_token)
+    t_file.chmod(0o600)
+
+    # Extract access token & update native email
+    try:
+        d = json.loads(raw_token)
+        access_tok = d.get("token", {}).get("access_token", "")
+        email = fetch_native_email(access_tok)
+        if email:
+            save_profile_meta(profile_id, email)
+    except Exception:
+        pass
+
+
+def apply_profile(profile_id: str) -> bool:
+    """Load profile credentials into active system locations."""
+    _, raw_token = get_profile_token_data(profile_id)
+    if not raw_token:
+        return False
+
+    # 1. Update Keyring
+    set_keyring_token(raw_token)
+
+    # 2. Update CLI fallback file
+    CLI_TOKEN_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    CLI_TOKEN_FILE.write_text(raw_token)
+    CLI_TOKEN_FILE.chmod(0o600)
+
+    # 3. Mark current
+    CURRENT_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    CURRENT_FILE.write_text(f"{profile_id}\n")
+    return True
+
+
+def get_current_profile_id() -> str:
+    if CURRENT_FILE.exists():
+        try:
+            val = CURRENT_FILE.read_text().strip()
+            if val:
+                return val
+        except Exception:
+            pass
+    return "1"
+
+
+def cmd_switch(target_id: str):
+    target_dir = PROFILES_DIR / str(target_id)
+    if not (target_dir / "token.json").exists():
+        print(f"\n{RED}Profile [{target_id}] is not configured yet.{RESET}")
+        print(f"Run {BOLD}agy-switch login {target_id}{RESET} to authenticate with your second account.\n")
+        return
+
+    current_id = get_current_profile_id()
+    if current_id == str(target_id):
+        email = get_profile_email(target_id)
+        tag = f" ({email})" if email else ""
+        print(f"{YELLOW}Already using Profile [{target_id}]{tag}.{RESET}")
+        return
+
+    # Auto-save active profile first so refreshed tokens are never lost
+    save_active_to_profile(current_id)
+
+    # Switch
+    if apply_profile(target_id):
+        email = get_profile_email(target_id, fetch_remote=True)
+        tag = f" ({BOLD}{email}{RESET}{GREEN})" if email else ""
+        print(f"{GREEN}✔ Switched to Profile [{target_id}]{tag}{RESET}")
+
+
+def cmd_status():
+    current_id = get_current_profile_id()
+    print(f"\n{BOLD}Antigravity CLI Profiles:{RESET}")
+
+    for pid in ("1", "2"):
+        p_dir = PROFILES_DIR / pid
+        has_token = (p_dir / "token.json").exists()
+        is_active = (pid == current_id)
+        email = get_profile_email(pid, fetch_remote=has_token) if has_token else ""
+
+        marker = f"{GREEN}● [{pid}]{RESET}" if is_active else f"  [{pid}]"
+        label = f"{BOLD}{email}{RESET}" if email else (f"Profile {pid}" if has_token else f"{DIM}(Not configured){RESET}")
+        status = f" {GREEN}(Active){RESET}" if is_active else ""
+
+        print(f"  {marker} {label}{status}")
+    print()
+
+
+def cmd_whoami():
+    cid = get_current_profile_id()
+    email = get_profile_email(cid, fetch_remote=True)
+    if email:
+        print(f"Active: Profile [{cid}] {email}")
+    else:
+        print(f"Active: Profile [{cid}]")
+
+
+def cmd_login(profile_id: str):
+    current_id = get_current_profile_id()
+
+    # 1. Save current profile safely
+    save_active_to_profile(current_id)
+    cur_email = get_profile_email(current_id)
+    cur_tag = f" ({cur_email})" if cur_email else ""
+    print(f"Saved current session to Profile [{current_id}]{cur_tag}.")
+
+    # 2. Clear active tokens to trigger Google OAuth
+    print(f"\nPreparing login for Profile [{profile_id}]...")
+    clear_keyring_token()
+    if CLI_TOKEN_FILE.exists():
+        CLI_TOKEN_FILE.unlink()
+
+    print(f"{YELLOW}{BOLD}A browser window will open for Google Sign-In.{RESET}")
+    print(f"Sign into your second Google account (with Antigravity Pro).\n")
+    input(f"Press {BOLD}[Enter]{RESET} to start...")
+
+    try:
+        subprocess.run(["agy"], check=False)
+    except KeyboardInterrupt:
+        print(f"\n{YELLOW}Login cancelled.{RESET}")
+
+    # Verify if login produced new credentials
+    new_token = get_keyring_token()
+    if not new_token and CLI_TOKEN_FILE.exists():
+        new_token = CLI_TOKEN_FILE.read_text().strip()
+
+    if new_token:
+        # Save to target profile
+        save_active_to_profile(profile_id)
+        CURRENT_FILE.write_text(f"{profile_id}\n")
+        email = get_profile_email(profile_id, fetch_remote=True)
+        tag = f" ({BOLD}{email}{RESET})" if email else ""
+        print(f"\n{GREEN}{BOLD}✔ Profile [{profile_id}] successfully configured{tag}!{RESET}")
+    else:
+        print(f"\n{RED}No credentials detected. Restoring Profile [{current_id}]...{RESET}")
+        apply_profile(current_id)
+
+
+def cmd_toggle():
+    current_id = get_current_profile_id()
+    target = "2" if current_id == "1" else "1"
+    cmd_switch(target)
+
+
+def main():
+    if len(sys.argv) == 1:
+        cmd_toggle()
+        return
+
+    arg = sys.argv[1].lower()
+    if arg in ("-s", "--status", "status", "list", "ls"):
+        cmd_status()
+    elif arg in ("whoami", "current", "me"):
+        cmd_whoami()
+    elif arg in ("login", "setup", "add", "init"):
+        target = sys.argv[2] if len(sys.argv) > 2 else "2"
+        cmd_login(target)
+    elif arg.isdigit():
+        cmd_switch(arg)
+    elif arg in ("-h", "--help", "help"):
+        print(f"""
+{BOLD}agy-switch{RESET} — Fast Account Switcher for Antigravity CLI
+
+{BOLD}USAGE:{RESET}
+  agy-switch             Toggle between Profile 1 and Profile 2
+  agy-switch 1           Switch to Profile 1
+  agy-switch 2           Switch to Profile 2
+  agy-switch status, -s  Show profile status
+  agy-switch whoami      Show active account
+  agy-switch login 2     Log into Account 2 via browser OAuth
+""")
+    else:
+        print(f"{RED}Unknown argument: {arg}. Use 'agy-switch --help'{RESET}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

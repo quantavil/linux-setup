@@ -1,0 +1,111 @@
+# Antigravity CLI Account Switcher (`agy-switch`)
+
+Instant profile and account switcher for Google's **Antigravity CLI (`agy`)**. Seamlessly hot-swaps between multiple Google accounts (e.g. two Antigravity Pro subscriptions) in ~10ms without tedious logout/login browser cycles.
+
+---
+
+## Why This Exists
+
+When coding intensively with Antigravity CLI, you may run into daily model rate caps or quota restrictions on a single subscription account. Having two Pro accounts allows uninterrupted workflow, but standard `agy` only supports one logged-in account at a time.
+
+`agy-switch` makes switching accounts instantaneous:
+
+- **10ms Swapping:** Atomic token swap directly in the Linux Secret Service Keyring and CLI cache.
+- **Token Refresh Preservation:** Whenever switching away from an active session, any freshly refreshed Google OAuth tokens are saved back to the profile directory so your session tokens never expire prematurely.
+- **Native Account Identity:** Queries Google's OAuth `userinfo` endpoint directly with the live bearer token to display the true authenticated email. Zero hardcoded values or guessed metadata.
+- **Zero Config Clutter:** Self-contained in `~/.gemini/profiles/`. Does not pollute global environment variables.
+
+---
+
+## Architecture & How It Works
+
+Antigravity CLI on Linux relies on two auth sources:
+1. **Linux Secret Service Keyring** (Primary): Item stored under service `'gemini'` with label `Password for 'antigravity' on 'gemini'`.
+2. **File Fallback Cache**: `~/.gemini/antigravity-cli/antigravity-oauth-token` (used in headless/non-keyring contexts).
+
+```mermaid
+flowchart LR
+    A["agy-switch toggle"] --> B["Save live tokens to active profile"]
+    B --> C["Swap Keyring & CLI token file"]
+    C --> D["Update current profile marker"]
+    D --> E["agy immediately uses target account"]
+```
+
+Legacy files like `~/.gemini/oauth_creds.json` and `~/.gemini/google_accounts.json` from old VS Code extensions are completely bypassed, eliminating stale account collisions.
+
+---
+
+## Installation
+
+Run the setup script from this directory:
+
+```bash
+./apply_agy-switch.sh
+```
+
+Or manually copy the script to your local binaries:
+
+```bash
+mkdir -p ~/.local/bin
+cp agy-switch ~/.local/bin/agy-switch
+chmod +x ~/.local/bin/agy-switch
+```
+
+Make sure `~/.local/bin` is in your `$PATH`.
+
+---
+
+## Setup & Onboarding Account 2
+
+1. Your currently active session is automatically saved as **Profile 1**.
+2. To onboard your **second Google Pro account**, run:
+
+```bash
+agy-switch login 2
+```
+
+Follow the on-screen prompt:
+- A browser window opens for Google Sign-In.
+- Log into your second Google account.
+- Once completed, `agy-switch` captures the credentials into **Profile 2**.
+
+---
+
+## Usage
+
+| Command | Action |
+| :--- | :--- |
+| `agy-switch` | **Toggle** instantly between Profile 1 and Profile 2 |
+| `agy-switch 1` | Switch directly to Profile 1 |
+| `agy-switch 2` | Switch directly to Profile 2 |
+| `agy-switch status` (or `-s`) | Display all profiles and show which one is currently active |
+| `agy-switch whoami` | Show currently active account email |
+| `agy-switch login 2` | Onboard or re-authenticate Profile 2 |
+
+---
+
+## Storage Structure
+
+```
+~/.gemini/
+├── antigravity-cli/
+│   └── antigravity-oauth-token   # Active CLI fallback token
+└── profiles/
+    ├── current                   # Stores active profile ID ("1" or "2")
+    ├── 1/
+    │   ├── token.json            # Account 1 OAuth token (mode 0600)
+    │   └── profile.json          # Cached native identity & metadata
+    └── 2/
+        ├── token.json            # Account 2 OAuth token (mode 0600)
+        └── profile.json          # Cached native identity & metadata
+```
+
+---
+
+## Uninstallation
+
+To remove `agy-switch`:
+
+```bash
+./revert_agy-switch.sh
+```

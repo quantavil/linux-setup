@@ -5,6 +5,7 @@ A collection of standalone utilities, configuration scripts, and customization s
 
 ## Structure
 - `adguard-home/`       # AdGuard Home setup scripts
+- `agy-switch/`         # Instant profile & account switcher for Antigravity CLI dual Pro accounts
 - `aikular/`            # Custom markdown note helper (Python parser/render scripts)
 - `cloudflare-warp/`    # Cloudflare WARP (wgcf) setup guide (renamed from wgcf/)
 - `copyparty/`          # Setup for file-sharing web server (copyparty)
