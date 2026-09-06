@@ -31,6 +31,7 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 - Global Wayland voice typing: `wtype` injects transcribed text directly into focused Wayland inputs without clipboard paste.
 - Concurrent lock ownership: Use `HOLDS_LOCK` flag to prevent EXIT traps from deleting locks owned by other instances.
 - Antigravity CLI auth: Stored in Secret Service keyring under service `'gemini'` (fallback `~/.gemini/antigravity-cli/antigravity-oauth-token`); atomic swap enables sub-10ms account switching.
+- Keyring session collection: `secret-tool store --collection=session ...` writes to the unlocked session keyring, preventing GUI prompter hangs when default keyrings are locked.
 
 ## Blunders
 - `jq: error: Cannot index boolean`: Outer `if` lacked `else .` returning false, `not .started` parsed as `(not) .started`. Fix: Wrapped as `(.started | not)`.

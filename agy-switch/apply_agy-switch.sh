@@ -7,6 +7,11 @@ set -euo pipefail
 echo "Installing Antigravity CLI Switcher (agy-switch)..."
 
 # 1. Dependency checks
+if ! command -v python3 &>/dev/null; then
+    echo "Error: 'python3' is required but not found in PATH." >&2
+    exit 1
+fi
+
 if ! command -v secret-tool &>/dev/null; then
     echo "Warning: 'secret-tool' (libsecret) not found." >&2
     echo "Install via: sudo pacman -S libsecret" >&2
