@@ -19,14 +19,14 @@ When coding intensively with Antigravity CLI, you may run into daily model rate 
 
 ## Architecture & How It Works
 
-Antigravity CLI on Linux relies on two auth sources:
-1. **Linux Secret Service Keyring** (Primary): Item stored under service `'gemini'` with label `Password for 'antigravity' on 'gemini'`.
-2. **File Fallback Cache**: `~/.gemini/antigravity-cli/antigravity-oauth-token` (used in headless/non-keyring contexts).
+Antigravity CLI on Linux relies on the **Linux Secret Service Keyring** (`org.freedesktop.secrets`):
+- Item stored in the default login collection under service `'gemini'` with label `Password for 'antigravity' on 'gemini'`.
+- Managed via `secret-tool` targeting the default keyring (avoiding ephemeral `session` collections which `agy` ignores).
 
 ```mermaid
 flowchart LR
-    A["agy-switch toggle"] --> B["Save live tokens to active profile"]
-    B --> C["Swap Keyring & CLI token file"]
+    A["agy-switch toggle / <id>"] --> B["Save active token from keyring to current profile"]
+    B --> C["Swap target token into Secret Service keyring"]
     C --> D["Update current profile marker"]
     D --> E["agy immediately uses target account"]
 ```
@@ -88,8 +88,6 @@ Follow the on-screen prompt:
 
 ```
 ~/.gemini/
-├── antigravity-cli/
-│   └── antigravity-oauth-token   # Active CLI fallback token
 └── profiles/
     ├── current                   # Stores active profile ID ("1" or "2")
     ├── 1/

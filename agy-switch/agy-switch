@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """
-agy-switch: Fast, zero-overhead account switcher for Antigravity CLI (agy).
-Swaps active Pro credentials in system keyring and CLI cache without manual relogin.
+agy-switch: Fast account switcher for Antigravity CLI (agy).
+Swaps active Pro credentials in the system Secret Service keyring.
 """
 
-import contextlib
-import fcntl
 import json
 import os
 import re
@@ -13,18 +11,14 @@ import shutil
 import subprocess
 import sys
 import urllib.request
-from datetime import datetime
 from pathlib import Path
 
-# Paths
 PROFILES_DIR = Path.home() / ".gemini" / "profiles"
 CURRENT_FILE = PROFILES_DIR / "current"
-LOCK_FILE = PROFILES_DIR / ".lock"
-CLI_TOKEN_FILE = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
 KEYRING_SERVICE = "gemini"
 KEYRING_USERNAME = "antigravity"
-KEYRING_ATTRS = ["service", KEYRING_SERVICE, "username", KEYRING_USERNAME]
 KEYRING_LABEL = "Password for 'antigravity' on 'gemini'"
+KEYRING_ATTRS = ["service", KEYRING_SERVICE, "username", KEYRING_USERNAME]
 
 # Terminal colors
 BOLD = "\033[1m"
@@ -37,98 +31,34 @@ RESET = "\033[0m"
 PROFILE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,32}$")
 
 
-@contextlib.contextmanager
-def acquire_lock():
-    """Ensure mutual exclusion across concurrent invocations."""
-    PROFILES_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    lock_fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
-    with os.fdopen(lock_fd, "w") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f, fcntl.LOCK_UN)
-
-
 def validate_profile_id(profile_id: str) -> str:
-    """Validate profile ID to prevent path traversal and malformed inputs."""
     pid = str(profile_id).strip()
     if not PROFILE_ID_REGEX.match(pid) or pid in (".", ".."):
-        raise ValueError(
-            f"Invalid profile ID '{profile_id}'. Only alphanumeric characters, hyphens, and underscores are allowed (1-32 chars)."
-        )
+        raise ValueError(f"Invalid profile ID '{profile_id}'. Use alphanumeric, '-' or '_' (1-32 chars).")
     return pid
 
 
-def atomic_write(path: Path, content: str, mode: int = 0o600):
-    """Write file atomically using a temporary file and atomic rename."""
+def write_file_atomic(path: Path, content: str, mode: int = 0o600):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".tmp.{os.getpid()}.{path.name}")
-    try:
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except Exception:
-        if tmp_path.exists():
-            with contextlib.suppress(Exception):
-                tmp_path.unlink()
-        raise
+    tmp = path.with_name(f".tmp.{os.getpid()}.{path.name}")
+    tmp.write_text(content)
+    tmp.chmod(mode)
+    tmp.replace(path)
 
 
-def ensure_profile_dir(profile_id: str) -> Path:
-    pid = validate_profile_id(profile_id)
-    p = PROFILES_DIR / pid
-    p.mkdir(mode=0o700, parents=True, exist_ok=True)
-    return p
-
-
-def is_valid_token_json(raw: str) -> bool:
-    """Validate that string contains a valid Google OAuth token structure."""
-    if not raw or not isinstance(raw, str):
+def is_valid_token(raw: str) -> bool:
+    if not raw:
         return False
     try:
         d = json.loads(raw)
-        if not isinstance(d, dict):
-            return False
-        tok = d.get("token")
-        if not isinstance(tok, dict):
-            return False
+        tok = d.get("token", {})
         return bool(tok.get("access_token") or tok.get("refresh_token"))
     except Exception:
         return False
 
 
-def extract_access_token(raw_token: str) -> str:
-    """Safely extract access_token without throwing on malformed JSON structures."""
-    try:
-        d = json.loads(raw_token)
-        if isinstance(d, dict):
-            tok = d.get("token")
-            if isinstance(tok, dict):
-                return str(tok.get("access_token") or "")
-    except Exception:
-        pass
-    return ""
-
-
-def extract_refresh_token(raw_token: str) -> str:
-    """Safely extract refresh_token without throwing on malformed JSON structures."""
-    try:
-        d = json.loads(raw_token)
-        if isinstance(d, dict):
-            tok = d.get("token")
-            if isinstance(tok, dict):
-                return str(tok.get("refresh_token") or "")
-    except Exception:
-        pass
-    return ""
-
-
 def get_keyring_token() -> str:
-    """Read active token from Linux Secret Service keyring matching agy's schema."""
+    """Read active token from Linux Secret Service keyring."""
     if not shutil.which("secret-tool"):
         return ""
     try:
@@ -137,7 +67,7 @@ def get_keyring_token() -> str:
             capture_output=True,
             text=True,
             check=False,
-            timeout=2,
+            timeout=3,
         )
         return r.stdout.strip()
     except Exception:
@@ -145,32 +75,11 @@ def get_keyring_token() -> str:
 
 
 def set_keyring_token(secret_json: str) -> bool:
-    """Store token in Linux Secret Service keyring matching agy's schema."""
+    """Store token in Linux Secret Service default keyring (used by agy's zalando/go-keyring)."""
     if not secret_json or not shutil.which("secret-tool"):
         return False
-
-    # Store into session collection (always unlocked, instant, no GUI prompt blocking)
-    try:
-        r = subprocess.run(
-            [
-                "secret-tool",
-                "store",
-                "--collection=session",
-                f"--label={KEYRING_LABEL}",
-                *KEYRING_ATTRS,
-            ],
-            input=secret_json,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=2,
-        )
-        if r.returncode == 0:
-            return True
-    except Exception:
-        pass
-
-    # Fallback to default collection with short timeout
+    # Clear first to ensure clean state and avoid duplicate/stale entries across collections
+    clear_keyring_token()
     try:
         r = subprocess.run(
             ["secret-tool", "store", f"--label={KEYRING_LABEL}", *KEYRING_ATTRS],
@@ -178,7 +87,7 @@ def set_keyring_token(secret_json: str) -> bool:
             capture_output=True,
             text=True,
             check=False,
-            timeout=2,
+            timeout=5,
         )
         return r.returncode == 0
     except Exception:
@@ -186,7 +95,7 @@ def set_keyring_token(secret_json: str) -> bool:
 
 
 def clear_keyring_token() -> bool:
-    """Clear active token in Linux Secret Service keyring matching agy's schema."""
+    """Clear active token in Linux Secret Service keyring."""
     if not shutil.which("secret-tool"):
         return True
     try:
@@ -195,182 +104,94 @@ def clear_keyring_token() -> bool:
             capture_output=True,
             text=True,
             check=False,
-            timeout=2,
+            timeout=3,
         )
         return r.returncode == 0
     except Exception:
         return False
 
 
-def fetch_native_email(access_token: str) -> str:
-    """Query Google OAuth userinfo endpoint natively with access token. Never guess."""
-    if not access_token:
-        return ""
+def fetch_email_from_token(token_str: str) -> str:
+    """Query Google OAuth userinfo endpoint with access token."""
     try:
+        d = json.loads(token_str)
+        access_tok = d.get("token", {}).get("access_token")
+        if not access_tok:
+            return ""
         req = urllib.request.Request(
             "https://www.googleapis.com/oauth2/v3/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={"Authorization": f"Bearer {access_tok}"},
         )
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
+        with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode())
-            if isinstance(data, dict):
-                return str(data.get("email") or "")
+            return str(data.get("email") or "")
     except Exception:
-        pass
+        return ""
+
+
+def get_profile_dir(profile_id: str) -> Path:
+    pid = validate_profile_id(profile_id)
+    p = PROFILES_DIR / pid
+    p.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return p
+
+
+def get_profile_token(profile_id: str) -> str:
+    token_file = PROFILES_DIR / profile_id / "token.json"
+    if token_file.exists():
+        raw = token_file.read_text().strip()
+        if is_valid_token(raw):
+            return raw
     return ""
 
 
-def get_profile_token_data(profile_id: str) -> tuple[dict, str]:
-    """Load token dict and raw string for a profile safely."""
-    try:
-        pid = validate_profile_id(profile_id)
-    except ValueError:
-        return {}, ""
-
-    token_file = PROFILES_DIR / pid / "token.json"
-    if not token_file.exists():
-        return {}, ""
-    try:
-        raw = token_file.read_text().strip()
-        if is_valid_token_json(raw):
-            return json.loads(raw), raw
-        return {}, ""
-    except Exception:
-        return {}, ""
-
-
-def get_profile_email(profile_id: str, fetch_remote: bool = False) -> str:
-    """Retrieve verified email for a profile without guessing."""
-    try:
-        pid = validate_profile_id(profile_id)
-    except ValueError:
-        return ""
-
-    p_dir = PROFILES_DIR / pid
-    meta_file = p_dir / "profile.json"
-
-    # 1. If remote refresh explicitly requested, attempt remote lookup first
-    if fetch_remote:
-        _, raw = get_profile_token_data(pid)
-        access_tok = extract_access_token(raw)
-        if access_tok:
-            email = fetch_native_email(access_tok)
-            if email:
-                save_profile_meta(pid, email)
-                return email
-
-    # 2. Use cached verified email
+def get_profile_email(profile_id: str) -> str:
+    meta_file = PROFILES_DIR / profile_id / "profile.json"
     if meta_file.exists():
         try:
             d = json.loads(meta_file.read_text())
-            if isinstance(d, dict) and d.get("email"):
+            if d.get("email"):
                 return str(d["email"])
         except Exception:
             pass
-
-    # 3. If no cached email yet, fetch once to populate cache
-    if not fetch_remote:
-        _, raw = get_profile_token_data(pid)
-        access_tok = extract_access_token(raw)
-        if access_tok:
-            email = fetch_native_email(access_tok)
-            if email:
-                save_profile_meta(pid, email)
-                return email
-
+    token_str = get_profile_token(profile_id)
+    if token_str:
+        email = fetch_email_from_token(token_str)
+        if email:
+            save_profile_meta(profile_id, email)
+            return email
     return ""
 
 
 def save_profile_meta(profile_id: str, email: str):
-    pid = validate_profile_id(profile_id)
-    p_dir = ensure_profile_dir(pid)
-    meta = {
-        "profile": pid,
-        "email": email,
-        "updated_at": datetime.now().isoformat(),
-    }
-    atomic_write(p_dir / "profile.json", json.dumps(meta, indent=2), mode=0o644)
-
-
-def get_active_token_for_profile(profile_id: str) -> str:
-    """Retrieve the live active token that matches the given profile."""
-    pid = validate_profile_id(profile_id)
-    p_token_file = PROFILES_DIR / pid / "token.json"
-    known_refresh = ""
-    if p_token_file.exists():
-        try:
-            known_refresh = extract_refresh_token(p_token_file.read_text())
-        except Exception:
-            pass
-
-    file_token = ""
-    if CLI_TOKEN_FILE.exists():
-        try:
-            file_token = CLI_TOKEN_FILE.read_text().strip()
-        except Exception:
-            pass
-    keyring_token = get_keyring_token()
-
-    # Prioritize file or keyring matching known refresh token
-    for candidate in (file_token, keyring_token):
-        if is_valid_token_json(candidate):
-            c_refresh = extract_refresh_token(candidate)
-            if not known_refresh or c_refresh == known_refresh:
-                return candidate
-
-    if not known_refresh:
-        for candidate in (file_token, keyring_token):
-            if is_valid_token_json(candidate):
-                return candidate
-
-    return ""
+    p_dir = get_profile_dir(profile_id)
+    meta = {"profile": profile_id, "email": email}
+    write_file_atomic(p_dir / "profile.json", json.dumps(meta, indent=2), mode=0o644)
 
 
 def save_active_to_profile(profile_id: str, fetch_email: bool = False):
-    """Snapshot current active credentials into profile storage safely."""
-    pid = validate_profile_id(profile_id)
-    p_dir = ensure_profile_dir(pid)
-
-    raw_token = get_active_token_for_profile(pid)
-    if not is_valid_token_json(raw_token):
+    """Snapshot current active keyring credentials into profile storage."""
+    raw_token = get_keyring_token()
+    if not is_valid_token(raw_token):
         return
-
-    # Write token.json atomically
-    t_file = p_dir / "token.json"
-    atomic_write(t_file, raw_token, mode=0o600)
-
-    # Only query Google API if explicitly requested or if profile has no cached email
+    p_dir = get_profile_dir(profile_id)
+    write_file_atomic(p_dir / "token.json", raw_token, mode=0o600)
     meta_file = p_dir / "profile.json"
-    needs_email = fetch_email or not meta_file.exists()
-    if needs_email:
-        access_tok = extract_access_token(raw_token)
-        if access_tok:
-            email = fetch_native_email(access_tok)
-            if email:
-                save_profile_meta(pid, email)
+    if fetch_email or not meta_file.exists():
+        email = fetch_email_from_token(raw_token)
+        if email:
+            save_profile_meta(profile_id, email)
 
 
 def apply_profile(profile_id: str) -> bool:
-    """Load profile credentials into active system locations."""
-    pid = validate_profile_id(profile_id)
-    _, raw_token = get_profile_token_data(pid)
-    if not is_valid_token_json(raw_token):
+    """Load profile credentials into system keyring."""
+    raw_token = get_profile_token(profile_id)
+    if not is_valid_token(raw_token):
         return False
-
-    # 1. Update Keyring
-    if shutil.which("secret-tool"):
-        keyring_ok = set_keyring_token(raw_token)
-        if not keyring_ok:
-            print(
-                f"{YELLOW}Warning: Failed to update Secret Service keyring. Using CLI file fallback.{RESET}",
-                file=sys.stderr,
-            )
-
-    # 2. Update CLI fallback file atomically
-    atomic_write(CLI_TOKEN_FILE, raw_token, mode=0o600)
-
-    # 3. Mark current atomically
-    atomic_write(CURRENT_FILE, f"{pid}\n", mode=0o644)
+    if not set_keyring_token(raw_token):
+        print(f"{RED}Error: Failed to store credentials in Secret Service keyring.{RESET}", file=sys.stderr)
+        return False
+    write_file_atomic(CURRENT_FILE, f"{profile_id}\n", mode=0o644)
     return True
 
 
@@ -389,25 +210,15 @@ def auto_onboard_profile_1():
     """Ensure existing active credentials are saved as Profile 1 if uninitialized."""
     p1_token = PROFILES_DIR / "1" / "token.json"
     if not p1_token.exists():
-        file_tok = ""
-        if CLI_TOKEN_FILE.exists():
-            try:
-                file_tok = CLI_TOKEN_FILE.read_text().strip()
-            except Exception:
-                pass
-        key_tok = get_keyring_token()
-        raw = file_tok if is_valid_token_json(file_tok) else key_tok
-
-        if is_valid_token_json(raw):
-            ensure_profile_dir("1")
-            atomic_write(p1_token, raw, mode=0o600)
-            access_tok = extract_access_token(raw)
-            if access_tok:
-                email = fetch_native_email(access_tok)
-                if email:
-                    save_profile_meta("1", email)
+        raw = get_keyring_token()
+        if is_valid_token(raw):
+            get_profile_dir("1")
+            write_file_atomic(p1_token, raw, mode=0o600)
+            email = fetch_email_from_token(raw)
+            if email:
+                save_profile_meta("1", email)
             if not CURRENT_FILE.exists():
-                atomic_write(CURRENT_FILE, "1\n", mode=0o644)
+                write_file_atomic(CURRENT_FILE, "1\n", mode=0o644)
 
 
 def cmd_switch(target_id: str):
@@ -417,28 +228,26 @@ def cmd_switch(target_id: str):
         print(f"{RED}{e}{RESET}")
         return
 
-    target_dir = PROFILES_DIR / tid
-    if not (target_dir / "token.json").exists():
+    if not get_profile_token(tid):
         print(f"\n{RED}Profile [{tid}] is not configured yet.{RESET}")
         print(f"Run {BOLD}agy-switch login {tid}{RESET} to authenticate with this account.\n")
         return
 
-    with acquire_lock():
-        current_id = get_current_profile_id()
-        if current_id == tid:
-            email = get_profile_email(tid, fetch_remote=False)
-            tag = f" ({email})" if email else ""
-            print(f"{YELLOW}Already using Profile [{tid}]{tag}.{RESET}")
-            return
+    current_id = get_current_profile_id()
+    if current_id == tid:
+        email = get_profile_email(tid)
+        tag = f" ({email})" if email else ""
+        print(f"{YELLOW}Already using Profile [{tid}]{tag}.{RESET}")
+        return
 
-        # Auto-save active profile first without blocking on network requests
-        save_active_to_profile(current_id, fetch_email=False)
+    # Snapshot currently active credentials first (preserves any refreshed tokens from agy)
+    save_active_to_profile(current_id, fetch_email=False)
 
-        # Apply target profile instantly (~10ms)
-        if apply_profile(tid):
-            email = get_profile_email(tid, fetch_remote=False)
-            tag = f" ({BOLD}{email}{RESET}{GREEN})" if email else ""
-            print(f"{GREEN}✔ Switched to Profile [{tid}]{tag}{RESET}")
+    # Apply target profile
+    if apply_profile(tid):
+        email = get_profile_email(tid)
+        tag = f" ({BOLD}{email}{RESET}{GREEN})" if email else ""
+        print(f"{GREEN}✔ Switched to Profile [{tid}]{tag}{RESET}")
 
 
 def cmd_status():
@@ -455,10 +264,9 @@ def cmd_status():
         return (0, int(k)) if k.isdigit() else (1, k)
 
     for pid in sorted(known, key=sort_key):
-        p_dir = PROFILES_DIR / pid
-        has_token = (p_dir / "token.json").exists()
+        has_token = bool(get_profile_token(pid))
         is_active = (pid == current_id)
-        email = get_profile_email(pid, fetch_remote=False) if has_token else ""
+        email = get_profile_email(pid) if has_token else ""
 
         marker = f"{GREEN}● [{pid}]{RESET}" if is_active else f"  [{pid}]"
         label = (
@@ -467,14 +275,13 @@ def cmd_status():
             else (f"Profile {pid}" if has_token else f"{DIM}(Not configured){RESET}")
         )
         status = f" {GREEN}(Active){RESET}" if is_active else ""
-
         print(f"  {marker} {label}{status}")
     print()
 
 
 def cmd_whoami():
     cid = get_current_profile_id()
-    email = get_profile_email(cid, fetch_remote=False)
+    email = get_profile_email(cid)
     if email:
         print(f"Active: Profile [{cid}] {email}")
     else:
@@ -490,59 +297,38 @@ def cmd_login(profile_id: str):
 
     if not shutil.which("agy"):
         print(f"{RED}Error: 'agy' binary not found in PATH.{RESET}")
-        print("Please ensure Antigravity CLI is installed and in your PATH before logging in.")
         return
 
-    with acquire_lock():
-        current_id = get_current_profile_id()
+    current_id = get_current_profile_id()
+    save_active_to_profile(current_id, fetch_email=False)
+    backup_token = get_profile_token(current_id)
 
-        # 1. Save current profile safely
-        save_active_to_profile(current_id, fetch_email=False)
-        cur_email = get_profile_email(current_id, fetch_remote=False)
-        cur_tag = f" ({cur_email})" if cur_email else ""
-        print(f"Saved current session to Profile [{current_id}]{cur_tag}.")
+    print(f"\nPreparing login for Profile [{pid}]...")
+    clear_keyring_token()
 
-        # Backup current raw token so we can guarantee restoration on cancel/failure
-        _, backup_token = get_profile_token_data(current_id)
-
-        # 2. Clear active tokens to trigger Google OAuth
-        print(f"\nPreparing login for Profile [{pid}]...")
-        clear_keyring_token()
-        if CLI_TOKEN_FILE.exists():
-            with contextlib.suppress(Exception):
-                CLI_TOKEN_FILE.unlink()
-
-        login_completed = False
-        try:
-            print(f"{YELLOW}{BOLD}A browser window will open for Google Sign-In.{RESET}")
-            print(f"Sign into your target Google account (with Antigravity Pro).\n")
-            input(f"Press {BOLD}[Enter]{RESET} to start...")
-            subprocess.run(["agy"], check=False)
-            login_completed = True
-        except (KeyboardInterrupt, EOFError):
-            print(f"\n{YELLOW}Login cancelled by user.{RESET}")
-        except Exception as e:
-            print(f"\n{RED}Error during login: {e}{RESET}")
-        finally:
-            # Check if login produced valid new credentials
-            new_token = get_keyring_token()
-            if not is_valid_token_json(new_token) and CLI_TOKEN_FILE.exists():
-                try:
-                    new_token = CLI_TOKEN_FILE.read_text().strip()
-                except Exception:
-                    pass
-
-            if is_valid_token_json(new_token) and login_completed:
-                # Save to target profile
-                save_active_to_profile(pid, fetch_email=True)
-                atomic_write(CURRENT_FILE, f"{pid}\n", mode=0o644)
-                email = get_profile_email(pid, fetch_remote=False)
-                tag = f" ({BOLD}{email}{RESET})" if email else ""
-                print(f"\n{GREEN}{BOLD}✔ Profile [{pid}] successfully configured{tag}!{RESET}")
-            else:
-                print(f"\n{RED}No credentials detected. Restoring Profile [{current_id}]...{RESET}")
-                if backup_token:
-                    apply_profile(current_id)
+    login_completed = False
+    try:
+        print(f"{YELLOW}{BOLD}A browser window will open for Google Sign-In.{RESET}")
+        print(f"Sign into your target Google account (with Antigravity Pro).\n")
+        input(f"Press {BOLD}[Enter]{RESET} to start...")
+        subprocess.run(["agy"], check=False)
+        login_completed = True
+    except (KeyboardInterrupt, EOFError):
+        print(f"\n{YELLOW}Login cancelled by user.{RESET}")
+    except Exception as e:
+        print(f"\n{RED}Error during login: {e}{RESET}")
+    finally:
+        new_token = get_keyring_token()
+        if is_valid_token(new_token) and login_completed:
+            save_active_to_profile(pid, fetch_email=True)
+            write_file_atomic(CURRENT_FILE, f"{pid}\n", mode=0o644)
+            email = get_profile_email(pid)
+            tag = f" ({BOLD}{email}{RESET})" if email else ""
+            print(f"\n{GREEN}{BOLD}✔ Profile [{pid}] successfully configured{tag}!{RESET}")
+        else:
+            print(f"\n{RED}No credentials detected. Restoring Profile [{current_id}]...{RESET}")
+            if backup_token:
+                apply_profile(current_id)
 
 
 def cmd_toggle():
@@ -552,8 +338,8 @@ def cmd_toggle():
 
 
 def main():
-    with acquire_lock():
-        auto_onboard_profile_1()
+    PROFILES_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    auto_onboard_profile_1()
 
     if len(sys.argv) == 1:
         cmd_toggle()
@@ -568,8 +354,7 @@ def main():
         target = sys.argv[2] if len(sys.argv) > 2 else "2"
         cmd_login(target)
     elif arg in ("-h", "--help", "help"):
-        print(f"""
-{BOLD}agy-switch{RESET} — Fast Account Switcher for Antigravity CLI
+        print(f"""{BOLD}agy-switch{RESET} — Fast Account Switcher for Antigravity CLI
 
 {BOLD}USAGE:{RESET}
   agy-switch             Toggle between Profile 1 and Profile 2

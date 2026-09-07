@@ -30,10 +30,10 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 - Non-streaming LLM responses: Strip `<think>` tags via `gsub("<(think|reasoning)>[\\s\\S]*?</(think|reasoning)>"; "")` before persisting.
 - Global Wayland voice typing: `wtype` injects transcribed text directly into focused Wayland inputs without clipboard paste.
 - Concurrent lock ownership: Use `HOLDS_LOCK` flag to prevent EXIT traps from deleting locks owned by other instances.
-- Antigravity CLI auth: Stored in Secret Service keyring under service `'gemini'` (fallback `~/.gemini/antigravity-cli/antigravity-oauth-token`); atomic swap enables sub-10ms account switching.
-- Keyring session collection: `secret-tool store --collection=session ...` writes to the unlocked session keyring, preventing GUI prompter hangs when default keyrings are locked.
+- Antigravity CLI auth: Stored in Secret Service keyring under service `'gemini'`, username `'antigravity'`; `zalando/go-keyring` reads default/login collection only.
 
 ## Blunders
+- `agy-switch` session collection desync: Storing with `--collection=session` bypassed default keyring; `agy` (`go-keyring`) only queries `default`, staying stuck on old account while `secret-tool lookup` falsely matched `session`. Fix: Target default keyring with `secret-tool store` and clear stale session items.
 - `jq: error: Cannot index boolean`: Outer `if` lacked `else .` returning false, `not .started` parsed as `(not) .started`. Fix: Wrapped as `(.started | not)`.
 - EXIT trap deleted other lock dirs: Unconditional lock cleanup deleted directories created by concurrent runs. Fix: Added `HOLDS_LOCK` ownership flag.
 - HTTP status check failed on 100 Continue: Reading first header line failed when 100 Continue preceded 200 OK. Fix: Parsed last status line via `awk`.
