@@ -17,6 +17,7 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 - `kde-shortcuts/`: KDE Plasma keyboard shortcuts cheatsheet.
 - `mpv/`: MPV media player configurations (`material-osc`, `thumbfast`).
 - `ms-fonts/`: Microsoft TrueType fonts installation helpers.
+- `strata/`: Strata file manager PKGBUILD and packaging setup for clean pacman updates.
 - `tauri-webkit-lag/`: Fix for laggy Tauri/WebKitGTK apps (DMA-BUF renderer + KWin latency).
 
 ## Conventions
