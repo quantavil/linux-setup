@@ -254,7 +254,7 @@ def cmd_status():
     current_id = get_current_profile_id()
     print(f"\n{BOLD}Antigravity CLI Profiles:{RESET}")
 
-    known = {"1", "2"}
+    known = {"1", "2", "3"}
     if PROFILES_DIR.exists():
         for item in PROFILES_DIR.iterdir():
             if item.is_dir() and PROFILE_ID_REGEX.match(item.name) and (item / "token.json").exists():
@@ -331,19 +331,14 @@ def cmd_login(profile_id: str):
                 apply_profile(current_id)
 
 
-def cmd_toggle():
-    current_id = get_current_profile_id()
-    target = "2" if current_id == "1" else "1"
-    cmd_switch(target)
-
-
 def main():
     PROFILES_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     auto_onboard_profile_1()
 
     if len(sys.argv) == 1:
-        cmd_toggle()
-        return
+        print(f"{RED}Error: Account parameter required (e.g. 'agy-switch 1', 'agy-switch 2', 'agy-switch 3').{RESET}")
+        print(f"Usage: {BOLD}agy-switch <1|2|3>{RESET} (or 'status', 'whoami', 'login <id>')")
+        sys.exit(1)
 
     arg = sys.argv[1].lower()
     if arg in ("-s", "--status", "status", "list", "ls"):
@@ -351,14 +346,18 @@ def main():
     elif arg in ("whoami", "current", "me"):
         cmd_whoami()
     elif arg in ("login", "setup", "add", "init"):
-        target = sys.argv[2] if len(sys.argv) > 2 else "2"
-        cmd_login(target)
+        if len(sys.argv) > 2:
+            target = sys.argv[2]
+            cmd_login(target)
+        else:
+            print(f"{RED}Error: Profile ID required for login.{RESET}")
+            print(f"Usage: {BOLD}agy-switch login <1|2|3>{RESET}")
+            sys.exit(1)
     elif arg in ("-h", "--help", "help"):
         print(f"""{BOLD}agy-switch{RESET} — Fast Account Switcher for Antigravity CLI
 
 {BOLD}USAGE:{RESET}
-  agy-switch             Toggle between Profile 1 and Profile 2
-  agy-switch <id>        Switch to Profile <id> (e.g. 1, 2)
+  agy-switch <id>        Switch to Profile <id> (e.g. 1, 2, 3)
   agy-switch status, -s  Show profile status
   agy-switch whoami      Show active account
   agy-switch login <id>  Log into Profile <id> via browser OAuth

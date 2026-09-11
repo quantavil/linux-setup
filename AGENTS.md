@@ -5,7 +5,7 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 
 ## Structure
 - `adguard-home/`: AdGuard Home setup scripts.
-- `agy-switch/`: Fast profile & account switcher for Antigravity CLI dual Pro accounts (`agy-switch`).
+- `agy-switch/`: Fast profile & account switcher for Antigravity CLI triple Pro accounts (`agy-switch <1|2|3>`).
 - `aikular/`: Custom markdown note helper (Python parser/render scripts).
 - `cloudflare-warp/`: Cloudflare WARP (`wgcf`) setup guide.
 - `copyparty/`: Setup for file-sharing web server (`copyparty`).

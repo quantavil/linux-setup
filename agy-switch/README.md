@@ -1,12 +1,12 @@
 # Antigravity CLI Account Switcher (`agy-switch`)
 
-Instant profile and account switcher for Google's **Antigravity CLI (`agy`)**. Seamlessly hot-swaps between multiple Google accounts (e.g. two Antigravity Pro subscriptions) in ~10ms without tedious logout/login browser cycles.
+Instant profile and account switcher for Google's **Antigravity CLI (`agy`)**. Seamlessly hot-swaps between multiple Google accounts (e.g. three Antigravity Pro subscriptions) in ~10ms without tedious logout/login browser cycles.
 
 ---
 
 ## Why This Exists
 
-When coding intensively with Antigravity CLI, you may run into daily model rate caps or quota restrictions on a single subscription account. Having two Pro accounts allows uninterrupted workflow, but standard `agy` only supports one logged-in account at a time.
+When coding intensively with Antigravity CLI, you may run into daily model rate caps or quota restrictions on a single subscription account. Having multiple Pro accounts allows uninterrupted workflow, but standard `agy` only supports one logged-in account at a time.
 
 `agy-switch` makes switching accounts instantaneous:
 
@@ -25,7 +25,7 @@ Antigravity CLI on Linux relies on the **Linux Secret Service Keyring** (`org.fr
 
 ```mermaid
 flowchart LR
-    A["agy-switch toggle / <id>"] --> B["Save active token from keyring to current profile"]
+    A["agy-switch <1|2|3>"] --> B["Save active token from keyring to current profile"]
     B --> C["Swap target token into Secret Service keyring"]
     C --> D["Update current profile marker"]
     D --> E["agy immediately uses target account"]
@@ -55,7 +55,7 @@ Make sure `~/.local/bin` is in your `$PATH`.
 
 ---
 
-## Setup & Onboarding Account 2
+## Setup & Onboarding Accounts 2 & 3
 
 1. Your currently active session is automatically saved as **Profile 1**.
 2. To onboard your **second Google Pro account**, run:
@@ -64,23 +64,32 @@ Make sure `~/.local/bin` is in your `$PATH`.
 agy-switch login 2
 ```
 
+3. To onboard your **third Google Pro account**, run:
+
+```bash
+agy-switch login 3
+```
+
 Follow the on-screen prompt:
 - A browser window opens for Google Sign-In.
-- Log into your second Google account.
-- Once completed, `agy-switch` captures the credentials into **Profile 2**.
+- Log into your target Google account.
+- Once completed, `agy-switch` captures the credentials into the corresponding profile.
 
 ---
 
 ## Usage
 
+> [!NOTE]
+> `agy-switch` requires an explicit profile parameter or command (e.g. `agy-switch 1`, `agy-switch 2`, `agy-switch 3`). Parameterless invocation is disallowed.
+
 | Command | Action |
 | :--- | :--- |
-| `agy-switch` | **Toggle** instantly between Profile 1 and Profile 2 |
 | `agy-switch 1` | Switch directly to Profile 1 |
 | `agy-switch 2` | Switch directly to Profile 2 |
+| `agy-switch 3` | Switch directly to Profile 3 |
 | `agy-switch status` (or `-s`) | Display all profiles and show which one is currently active |
 | `agy-switch whoami` | Show currently active account email |
-| `agy-switch login 2` | Onboard or re-authenticate Profile 2 |
+| `agy-switch login <id>` | Onboard or re-authenticate Profile `<id>` (e.g. `2`, `3`) |
 
 ---
 
@@ -89,12 +98,15 @@ Follow the on-screen prompt:
 ```
 ~/.gemini/
 └── profiles/
-    ├── current                   # Stores active profile ID ("1" or "2")
+    ├── current                   # Stores active profile ID ("1", "2", or "3")
     ├── 1/
     │   ├── token.json            # Account 1 OAuth token (mode 0600)
     │   └── profile.json          # Cached native identity & metadata
-    └── 2/
-        ├── token.json            # Account 2 OAuth token (mode 0600)
+    ├── 2/
+    │   ├── token.json            # Account 2 OAuth token (mode 0600)
+    │   └── profile.json          # Cached native identity & metadata
+    └── 3/
+        ├── token.json            # Account 3 OAuth token (mode 0600)
         └── profile.json          # Cached native identity & metadata
 ```
 
