@@ -4,6 +4,7 @@ agy-switch: Fast account switcher for Antigravity CLI (agy).
 Swaps active Pro credentials in the system Secret Service keyring.
 """
 
+import base64
 import json
 import os
 import re
@@ -15,6 +16,7 @@ from pathlib import Path
 
 PROFILES_DIR = Path.home() / ".gemini" / "profiles"
 CURRENT_FILE = PROFILES_DIR / "current"
+CLI_TOKEN_FILE = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
 KEYRING_SERVICE = "gemini"
 KEYRING_USERNAME = "antigravity"
 KEYRING_LABEL = "Password for 'antigravity' on 'gemini'"
@@ -111,8 +113,52 @@ def clear_keyring_token() -> bool:
         return False
 
 
-def fetch_email_from_token(token_str: str) -> str:
-    """Query Google OAuth userinfo endpoint with access token."""
+def get_active_token() -> str:
+    """Read active credentials from Secret Service keyring or CLI fallback file."""
+    raw = get_keyring_token()
+    if is_valid_token(raw):
+        return raw
+    if CLI_TOKEN_FILE.exists():
+        try:
+            raw = CLI_TOKEN_FILE.read_text().strip()
+            if is_valid_token(raw):
+                return raw
+        except Exception:
+            pass
+    return ""
+
+
+def clear_active_tokens():
+    """Clear active credentials in both Secret Service keyring and CLI fallback file."""
+    clear_keyring_token()
+    if CLI_TOKEN_FILE.exists():
+        try:
+            CLI_TOKEN_FILE.unlink()
+        except Exception:
+            pass
+
+
+def extract_email_from_token(token_str: str) -> str:
+    """Extract authenticated email from id_token JWT (instant, offline) with endpoint fallback."""
+    if not token_str:
+        return ""
+    # 1. Decode id_token JWT payload directly (instant, offline)
+    try:
+        d = json.loads(token_str)
+        id_tok = d.get("id_token")
+        if id_tok and isinstance(id_tok, str) and "." in id_tok:
+            parts = id_tok.split(".")
+            if len(parts) >= 2:
+                payload_b64 = parts[1]
+                payload_b64 += "=" * ((4 - len(payload_b64) % 4) % 4)
+                payload_json = base64.urlsafe_b64decode(payload_b64.encode()).decode("utf-8", errors="ignore")
+                payload = json.loads(payload_json)
+                if payload.get("email"):
+                    return str(payload["email"])
+    except Exception:
+        pass
+
+    # 2. Fallback: Query Google OAuth userinfo endpoint using access token
     try:
         d = json.loads(token_str)
         access_tok = d.get("token", {}).get("access_token")
@@ -156,7 +202,7 @@ def get_profile_email(profile_id: str) -> str:
             pass
     token_str = get_profile_token(profile_id)
     if token_str:
-        email = fetch_email_from_token(token_str)
+        email = extract_email_from_token(token_str)
         if email:
             save_profile_meta(profile_id, email)
             return email
@@ -170,27 +216,29 @@ def save_profile_meta(profile_id: str, email: str):
 
 
 def save_active_to_profile(profile_id: str, fetch_email: bool = False):
-    """Snapshot current active keyring credentials into profile storage."""
-    raw_token = get_keyring_token()
+    """Snapshot current active credentials into profile storage."""
+    raw_token = get_active_token()
     if not is_valid_token(raw_token):
         return
     p_dir = get_profile_dir(profile_id)
     write_file_atomic(p_dir / "token.json", raw_token, mode=0o600)
     meta_file = p_dir / "profile.json"
     if fetch_email or not meta_file.exists():
-        email = fetch_email_from_token(raw_token)
+        email = extract_email_from_token(raw_token)
         if email:
             save_profile_meta(profile_id, email)
 
 
 def apply_profile(profile_id: str) -> bool:
-    """Load profile credentials into system keyring."""
+    """Load profile credentials into system keyring and CLI token fallback file."""
     raw_token = get_profile_token(profile_id)
     if not is_valid_token(raw_token):
         return False
     if not set_keyring_token(raw_token):
         print(f"{RED}Error: Failed to store credentials in Secret Service keyring.{RESET}", file=sys.stderr)
         return False
+    # Keep CLI token fallback file in sync so agy never falls back to an older cached session
+    write_file_atomic(CLI_TOKEN_FILE, raw_token, mode=0o600)
     write_file_atomic(CURRENT_FILE, f"{profile_id}\n", mode=0o644)
     return True
 
@@ -210,11 +258,11 @@ def auto_onboard_profile_1():
     """Ensure existing active credentials are saved as Profile 1 if uninitialized."""
     p1_token = PROFILES_DIR / "1" / "token.json"
     if not p1_token.exists():
-        raw = get_keyring_token()
+        raw = get_active_token()
         if is_valid_token(raw):
             get_profile_dir("1")
             write_file_atomic(p1_token, raw, mode=0o600)
-            email = fetch_email_from_token(raw)
+            email = extract_email_from_token(raw)
             if email:
                 save_profile_meta("1", email)
             if not CURRENT_FILE.exists():
@@ -234,7 +282,7 @@ def cmd_switch(target_id: str):
         return
 
     current_id = get_current_profile_id()
-    if current_id == tid:
+    if current_id == tid and is_valid_token(get_keyring_token()) and CLI_TOKEN_FILE.exists():
         email = get_profile_email(tid)
         tag = f" ({email})" if email else ""
         print(f"{YELLOW}Already using Profile [{tid}]{tag}.{RESET}")
@@ -300,11 +348,24 @@ def cmd_login(profile_id: str):
         return
 
     current_id = get_current_profile_id()
+    # Save currently active session first
     save_active_to_profile(current_id, fetch_email=False)
-    backup_token = get_profile_token(current_id)
+
+    # Backup states for restoration in case login is cancelled in middle
+    backup_current_id = current_id
+    backup_active_token = get_active_token()
+    backup_target_token = get_profile_token(pid)
+    backup_target_email = get_profile_email(pid)
+
+    if backup_target_token:
+        cur_desc = f" ({backup_target_email})" if backup_target_email else ""
+        print(f"{YELLOW}Profile [{pid}]{cur_desc} is currently configured.{RESET}")
+        print(f"Logging in will {BOLD}overwrite{RESET} Profile [{pid}] unless cancelled.")
 
     print(f"\nPreparing login for Profile [{pid}]...")
-    clear_keyring_token()
+    # Clear active credentials from BOTH keyring and CLI fallback token file
+    # This ensures agy MUST open the browser rather than reusing any cached account
+    clear_active_tokens()
 
     login_completed = False
     try:
@@ -318,17 +379,30 @@ def cmd_login(profile_id: str):
     except Exception as e:
         print(f"\n{RED}Error during login: {e}{RESET}")
     finally:
-        new_token = get_keyring_token()
-        if is_valid_token(new_token) and login_completed:
-            save_active_to_profile(pid, fetch_email=True)
-            write_file_atomic(CURRENT_FILE, f"{pid}\n", mode=0o644)
-            email = get_profile_email(pid)
+        new_token = get_active_token()
+        # Verify login completed and produced valid new credentials
+        if login_completed and is_valid_token(new_token):
+            # Overwrite target profile
+            p_dir = get_profile_dir(pid)
+            write_file_atomic(p_dir / "token.json", new_token, mode=0o600)
+            email = extract_email_from_token(new_token)
+            save_profile_meta(pid, email)
+            apply_profile(pid)
             tag = f" ({BOLD}{email}{RESET})" if email else ""
             print(f"\n{GREEN}{BOLD}✔ Profile [{pid}] successfully configured{tag}!{RESET}")
         else:
-            print(f"\n{RED}No credentials detected. Restoring Profile [{current_id}]...{RESET}")
-            if backup_token:
-                apply_profile(current_id)
+            print(f"\n{YELLOW}Login incomplete or cancelled. Restoring previous state...{RESET}")
+            # Restore target profile if it previously existed
+            if backup_target_token:
+                p_dir = get_profile_dir(pid)
+                write_file_atomic(p_dir / "token.json", backup_target_token, mode=0o600)
+                if backup_target_email:
+                    save_profile_meta(pid, backup_target_email)
+            # Restore active session
+            if backup_active_token:
+                set_keyring_token(backup_active_token)
+                write_file_atomic(CLI_TOKEN_FILE, backup_active_token, mode=0o600)
+                write_file_atomic(CURRENT_FILE, f"{backup_current_id}\n", mode=0o644)
 
 
 def main():
