@@ -76,10 +76,23 @@ def get_keyring_token() -> str:
         return ""
 
 
+def unlock_keyring():
+    """Attempt to unlock default collection if locked (passwordless keyrings unlock silently)."""
+    try:
+        import dbus
+        bus = dbus.SessionBus()
+        service = bus.get_object("org.freedesktop.secrets", "/org/freedesktop/secrets")
+        secrets = dbus.Interface(service, "org.freedesktop.Secret.Service")
+        secrets.Unlock([dbus.ObjectPath("/org/freedesktop/secrets/aliases/default")])
+    except Exception:
+        pass
+
+
 def set_keyring_token(secret_json: str) -> bool:
     """Store token in Linux Secret Service default keyring (used by agy's zalando/go-keyring)."""
     if not secret_json or not shutil.which("secret-tool"):
         return False
+    unlock_keyring()
     # Clear first to ensure clean state and avoid duplicate/stale entries across collections
     clear_keyring_token()
     try:
@@ -192,6 +205,12 @@ def get_profile_token(profile_id: str) -> str:
 
 
 def get_profile_email(profile_id: str) -> str:
+    token_str = get_profile_token(profile_id)
+    if token_str:
+        email = extract_email_from_token(token_str)
+        if email:
+            save_profile_meta(profile_id, email)
+            return email
     meta_file = PROFILES_DIR / profile_id / "profile.json"
     if meta_file.exists():
         try:
@@ -200,12 +219,6 @@ def get_profile_email(profile_id: str) -> str:
                 return str(d["email"])
         except Exception:
             pass
-    token_str = get_profile_token(profile_id)
-    if token_str:
-        email = extract_email_from_token(token_str)
-        if email:
-            save_profile_meta(profile_id, email)
-            return email
     return ""
 
 
@@ -220,13 +233,17 @@ def save_active_to_profile(profile_id: str, fetch_email: bool = False):
     raw_token = get_active_token()
     if not is_valid_token(raw_token):
         return
+    active_email = extract_email_from_token(raw_token)
+    existing_token = get_profile_token(profile_id)
+    if existing_token:
+        existing_email = extract_email_from_token(existing_token)
+        # Safety check: do not overwrite a profile with credentials belonging to a different account
+        if existing_email and active_email and existing_email != active_email:
+            return
     p_dir = get_profile_dir(profile_id)
     write_file_atomic(p_dir / "token.json", raw_token, mode=0o600)
-    meta_file = p_dir / "profile.json"
-    if fetch_email or not meta_file.exists():
-        email = extract_email_from_token(raw_token)
-        if email:
-            save_profile_meta(profile_id, email)
+    if active_email:
+        save_profile_meta(profile_id, active_email)
 
 
 def apply_profile(profile_id: str) -> bool:

@@ -32,8 +32,10 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 - Global Wayland voice typing: `wtype` injects transcribed text directly into focused Wayland inputs without clipboard paste.
 - Concurrent lock ownership: Use `HOLDS_LOCK` flag to prevent EXIT traps from deleting locks owned by other instances.
 - Antigravity CLI auth: Stored in Secret Service keyring under service `'gemini'`, username `'antigravity'`; `zalando/go-keyring` reads default/login collection only.
+- GNOME Keyring 50 GKeyFile corruption: Unescaped newlines in any secret fail `g_key_file_load_from_data`, dropping the collection from D-Bus and hanging `secret-tool store`. Fix: Escape newlines as `\n` and unlock default collection via D-Bus before store.
 
 ## Blunders
+- `agy-switch` profile metadata desync & overwrite: Reading stale `profile.json` before `token.json` masked account identity; `save_active_to_profile` clobbered profiles with foreign active tokens. Fix: Make `token.json` JWT payload authoritative for email and guard `save_active_to_profile` against mismatched emails.
 - `agy-switch` session collection desync: Storing with `--collection=session` bypassed default keyring; `agy` (`go-keyring`) only queries `default`, staying stuck on old account while `secret-tool lookup` falsely matched `session`. Fix: Target default keyring with `secret-tool store` and clear stale session items.
 - `jq: error: Cannot index boolean`: Outer `if` lacked `else .` returning false, `not .started` parsed as `(not) .started`. Fix: Wrapped as `(.started | not)`.
 - EXIT trap deleted other lock dirs: Unconditional lock cleanup deleted directories created by concurrent runs. Fix: Added `HOLDS_LOCK` ownership flag.
