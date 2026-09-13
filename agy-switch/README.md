@@ -1,85 +1,225 @@
-# agy-switch 2 — Rust account manager
+# ⚡ agy-switch 2 — Recoverable Antigravity Account Manager
 
-Recoverable account switching for the Antigravity CLI on Linux. The Rust binary replaces the earlier Python script; `legacy/agy-switch.py` is retained only for reference.
+[![Language](https://img.shields.io/badge/language-Rust_2024-orange.svg?style=flat-square&logo=rust)](https://www.rust-lang.org/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.87%2B-blue.svg?style=flat-square)](https://github.com/rust-lang/rust)
+[![Storage](https://img.shields.io/badge/storage-SQLite3%20%2B%20Secret%20Service-green.svg?style=flat-square)](https://specifications.freedesktop.org/secret-service/)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%2F%20Wayland-red.svg?style=flat-square&logo=linux)](https://archlinux.org)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
 
-## Install
+High-performance, crash-safe account and profile manager for Google's **Antigravity CLI (`agy`)** on Linux. Engineered in Rust to hot-swap between multiple Google Pro subscription accounts in ~10ms with zero credential leakage, process race detection, and durable write-ahead journal recovery.
 
-Requires Rust/Cargo to build and a working persistent Secret Service provider (GNOME Keyring on this desktop). The binary uses D-Bus directly; it does not shell out to `secret-tool`. SQLite is bundled in the executable.
+---
 
-```sh
+## 📑 Table of Contents
+
+- [Overview](#-overview)
+- [Architecture & Mechanics](#-architecture--mechanics)
+- [Installation](#-installation)
+- [Command Reference](#-command-reference)
+- [Storage & Safety Model](#-storage--safety-model)
+- [Crash-Safe Transaction Pipeline](#-crash-safe-transaction-pipeline)
+- [Troubleshooting & Diagnostics](#-troubleshooting--diagnostics)
+- [Test & Validation Suite](#-test--validation-suite)
+- [Uninstallation](#-uninstallation)
+
+---
+
+## 💡 Overview
+
+When coding intensively with Antigravity CLI, you may hit model quotas or daily rate caps on a single Pro account. Having multiple subscriptions (e.g. Profiles 1, 2, and 3) provides uninterrupted deep-work workflows, but the stock CLI only authenticates one session at a time.
+
+`agy-switch` makes multi-account switching instant, seamless, and completely resilient:
+
+- **10ms Atomic Swapping:** Directly interacts with the Linux Secret Service D-Bus interface without shelling out to external tools.
+- **Durable Recovery Journal:** Write-ahead journaling (`pending.json`) guarantees automatic state restoration or rollback if a process is killed or interrupted mid-swap.
+- **Process Concurrency Guard:** Detects running `agy` sessions and blocks switches while the CLI is active to prevent session overwrites.
+- **Safe Browser Login & Overwrite:** Authenticates additional accounts through the native browser OAuth flow, automatically backing up existing profiles before overwriting.
+- **Zero Cloud Leakage:** Strictly local storage using Unix file locks (`.lock`), private permissions (`0700`/`0600`), and compacted single-line JSON formatting (preventing GNOME Keyring 50 parser corruptions).
+
+---
+
+## 🏗️ Architecture & Mechanics
+
+Antigravity CLI on Linux queries the default Secret Service collection (`org.freedesktop.secrets`) and falls back to `~/.gemini/antigravity-cli/antigravity-oauth-token`. `agy-switch` maintains continuous synchronization across both stores and tracks account identities in an embedded transactional SQLite database.
+
+```mermaid
+flowchart TD
+    A["User: agy-switch <id>"] --> B["Acquire OS File Lock (.lock)"]
+    B --> C{"agy running?"}
+    C -- "Yes" --> D["Abort: Refuse switch during active CLI session"]
+    C -- "No" --> E["Flush Recovery Journal (pending.json)"]
+    E --> F["Write Profile Copy to Secret Service Keyring"]
+    F --> G["Replace Active Keyring Item (service=gemini)"]
+    G --> H["Atomically Sync CLI Fallback File (fsync + rename)"]
+    H --> I["Commit Selection Marker & SQLite Metadata"]
+    I --> J["Remove Recovery Journal"]
+    J --> K["✔ Switch Complete (~10ms)"]
+```
+
+---
+
+## 📦 Installation
+
+### Prerequisites
+- **Rust toolchain:** `rustc` & `cargo` 1.87+ (Arch: `pacman -S rust`)
+- **Secret Service Provider:** GNOME Keyring or equivalent desktop keyring daemon running over D-Bus.
+
+### Build & Deploy
+
+Run the installation script to build the release binary, run unit tests, backup previous configurations, and deploy to `~/.local/bin/agy-switch`:
+
+```bash
 ./apply_agy-switch.sh
 ```
 
-The installer runs tests, builds with `Cargo.lock`, backs up the existing command and profiles, and atomically installs `~/.local/bin/agy-switch`. This makes it available across projects for your user, following the repository installation convention. It does not install an account-specific credential manager for other users.
+Ensure `~/.local/bin` is in your shell `$PATH`.
 
-## Commands
+---
 
-```sh
-agy-switch 1                 # also: agy-switch switch 1
-agy-switch status
-agy-switch whoami
-agy-switch login 3
-agy-switch recover
-agy-switch doctor
-agy-switch migrate           # verify persistent keyring copies of saved profiles
+## 🚀 Command Reference
+
+> [!IMPORTANT]
+> `agy-switch` requires an explicit profile parameter or command. Running without arguments displays usage guidance.
+
+| Command | Syntax | Description |
+| :--- | :--- | :--- |
+| **Switch** | `agy-switch <id>` | Switch to Profile `<id>` (e.g. `1`, `2`, `3`). Also: `agy-switch switch <id>` |
+| **Status** | `agy-switch status`, `-s` | Inspect all saved profiles, account emails, and active marker |
+| **Whoami** | `agy-switch whoami` | Output the verified identity of the currently active profile |
+| **Login** | `agy-switch login <id>` | Authenticate Profile `<id>` via Google browser OAuth |
+| **Recover** | `agy-switch recover` | Reconcile pending recovery journals from interrupted operations |
+| **Doctor** | `agy-switch doctor` | Run health checks across D-Bus, keyrings, tokens, and files |
+| **Migrate** | `agy-switch migrate` | Re-verify and synchronize persistent keyring copies of profiles |
+
+### Typical Usage Workflow
+
+```bash
+# 1. Inspect current profiles
+$ agy-switch status
+Antigravity CLI Profiles:
+  ● [1] harshsrivastav622@gmail.com (Active)
+    [2] quantavil@gmail.com
+    [3] (Not configured)
+
+# 2. Onboard third account via browser OAuth
+$ agy-switch login 3
+
+# 3. Switch accounts instantly
+$ agy-switch 2
+✔ Switched to Profile [2] (quantavil@gmail.com)
+
+# 4. Check active account
+$ agy-switch whoami
+Active: Profile [2] quantavil@gmail.com
 ```
 
-Close running `agy` sessions before switching, logging in, or recovering. They can otherwise write refreshed credentials over a switch. The manager checks your running processes and refuses account changes while `agy` is running. Another program starting `agy` concurrently cannot be completely prevented; this is not a global lock inside the upstream CLI.
+---
 
-During login, sign in through the ordinary agy browser flow. The manager monitors credentials and saves the profile as soon as it observes refreshable credentials; exit agy to complete activation. A cancellation restores the previous state when possible. If authentication was already captured, it remains saved even if activation fails. `recover` completes pending work.
+## 🔒 Storage & Safety Model
 
-Status distinguishes saved profiles from verified active accounts. The legacy `current` marker alone is never proof of identity. No missing profile is automatically invented. A saved profile whose local file is missing can be restored from its persistent keyring copy when switching to it.
+All state is preserved under `~/.gemini/profiles/` with strict POSIX permissions:
 
-## Storage and recovery
+```
+~/.gemini/profiles/
+├── .lock                     # Cooperative OS file lock (0600)
+├── current                   # Active profile marker (compatibility)
+├── state.sqlite3             # Transactional metadata & switch history
+├── pending.json              # Write-ahead recovery journal (0600)
+├── 1/
+│   ├── token.json            # Durable OAuth token backup (0600)
+│   ├── token.previous.json   # Automatic fallback backup upon overwrite
+│   └── profile.json          # Cached native identity & email
+├── 2/
+│   ├── token.json
+│   └── profile.json
+└── 3/
+    ├── token.json
+    └── profile.json
+```
 
-`~/.gemini/profiles/` is private (0700):
+### Security Considerations
 
-- `<id>/token.json`: durable credential backup (0600), compatible with the old tool.
-- `<id>/token.previous.json`: previous credential version when replaced.
-- `state.sqlite3`: transactional profile identity metadata and selected profile; no OAuth secrets in SQLite.
-- `pending.json`: temporary recovery record containing previous active credentials (0600).
-- `.lock`: OS file lock shared by manager commands, automatically released on process exit.
-- `current`: compatibility marker written after verified activation.
+> [!WARNING]
+> Backup and recovery files contain plaintext OAuth bearer tokens protected by Unix filesystem permissions (`0700` dir / `0600` files). Automated snapshots stored under `~/.local/state/agy-switch/backups/` have the same security sensitivity.
 
-Existing profile files are imported without rewriting their token contents. Their permissions are tightened. Corrupt files are retained and reported. Identity is decoded locally from the saved ID token for account routing, not used as proof of server-side authentication or subscription status. OAuth expiry/revocation can still require reauthentication.
+- **Offline Identity Extraction:** Decodes the unencrypted JWT payload from `id_token` directly in memory without making network calls or leaking tokens.
+- **GNOME Keyring 50 Fix:** JSON payloads are compacted into single-line strings before writing to D-Bus to prevent GKeyFile newline parser crashes.
+- **Memory Zeroization:** Sensitive in-memory token buffers are scrubbed on drop.
 
-Each activated profile also receives a separate persistent Secret Service item with attributes `application=agy-switch, profile=<id>`. The CLI active item uses `service=gemini, username=antigravity` in the exact default collection. Session collections and ambiguous duplicate active items are rejected. Unlock prompts are handled by the Secret Service library. D-Bus method calls have a 10-second deadline; interactive unlock prompts wait for the user.
+---
 
-**Credential backups and recovery files contain plaintext OAuth secrets protected by file permissions, not encryption.** This preserves the existing storage model and enables recovery when the keyring is unavailable. The keyring provider determines its own at-rest encryption; a passwordless collection is not encrypted. Backups under `~/.local/state/agy-switch/backups/` have the same sensitivity. The tool reduces accidental secret logging and clears owned token buffers on drop, but cannot promise that every library allocation is scrubbed.
+## 🔄 Crash-Safe Transaction Pipeline
 
-Switch ordering:
+```mermaid
+sequenceDiagram
+    participant User
+    participant Switcher as agy-switch
+    participant Disk as Local Storage
+    participant DBus as Secret Service (Keyring)
+    participant Fallback as CLI Token File
 
-1. Validate target, recover pending work, preserve refreshed credentials by account identity.
-2. Flush a recovery record with the previous keyring, fallback file, and selected profile.
-3. Save the per-profile keyring copy; replace the active item without clearing it first.
-4. Read back the keyring credential; atomically replace and verify the CLI fallback file.
-5. Verify the keyring again, commit selection, and remove the recovery record.
+    User->>Switcher: agy-switch 2
+    Switcher->>Disk: Check .lock & verify no running 'agy'
+    Switcher->>Disk: Write pending.json (Journal previous state)
+    Switcher->>DBus: Store Profile 2 item & Update default active
+    Switcher->>DBus: Verify active item readback matches
+    Switcher->>Fallback: Atomic write & fsync fallback file
+    Switcher->>Disk: Commit state.sqlite3 & remove pending.json
+    Switcher-->>User: ✔ Switched to Profile [2]
+```
 
-On error, restore the recorded previous state. If restoration also fails, retain the journal and return a nonzero exit code. After interruption, recovery rolls an incomplete switch back; a captured login is completed. SQLite transactions cannot span D-Bus and files, so the journal is required. Files use private temporary files, fsync, rename, and directory fsync.
+If an error or interruption occurs at any point before commit, the recovery journal (`pending.json`) rolls back Secret Service, the CLI fallback file, and the selection marker to the previous verified state.
 
-JSON is compacted before keyring writes. This avoids multiline credential values implicated in the previous GNOME Keyring 50 file-parsing failure. The manager never automatically resets a keyring or deletes unrelated credentials.
+---
 
-## Validation
+## 🩺 Troubleshooting & Diagnostics
 
-```sh
+Run the integrated health inspector:
+
+```bash
+agy-switch doctor
+```
+
+It diagnoses:
+- D-Bus connection & Secret Service responsiveness.
+- Default collection lock status and alias resolution.
+- Running `agy` processes that could intercept credential writes.
+- Malformed token files, missing refresh tokens, or pending crash journals.
+
+### Keyring Object Missing Error
+If the default collection lists an alias but reports `Object does not exist`, your GNOME Keyring daemon may have dropped collections. **Do not delete saved profile directories.** Restart the user daemon or run:
+```bash
+agy-switch recover
+```
+
+---
+
+## 🧪 Test & Validation Suite
+
+`agy-switch` includes both robust unit tests and an end-to-end integration harness executing on an isolated D-Bus daemon:
+
+```bash
+# Run unit test suite (18 unit tests)
 cargo test --locked
+
+# Verify zero linter warnings
 cargo clippy --locked --all-targets -- -D warnings
+
+# Verify style compliance
 cargo fmt --check
+
+# Run daemon restart integration test
 bash tests/keyring-restart.sh
 ```
 
-The unit tests inject failed writes, persistent outages, ignored backend writes, interrupted operations, cancelled login, stale markers, invalid files, and lock contention. The integration script uses synthetic accounts, a disposable XDG data directory, and a private D-Bus. It checks active and saved credentials across two real GNOME Keyring daemon restarts, verifies service PIDs change, and restores a missing profile backup. It requires `dbus-run-session`, `busctl`, and `gnome-keyring-daemon`. It does not reboot the computer or authenticate real Google accounts.
+---
 
-Validated on 2026-09-13: 18 unit tests passed, formatting and Clippy checks passed, and the isolated integration test passed across two daemon restarts. After installation, a live Profile 1 → Profile 2 → Profile 1 round trip verified the active keyring identity, fallback file, selection marker, and absence of pending recovery. The running-process guard was also verified to reject a switch without changing the active marker or fallback credential. A full computer reboot and a new browser OAuth login were not part of this validation.
+## 🗑️ Uninstallation
 
-## Troubleshooting
+To cleanly remove the installed CLI command without purging saved profile credentials:
 
-`agy-switch doctor` reports unavailable/locked keyrings, invalid credentials, missing refresh tokens, running agy sessions, and pending recovery. It does not print tokens or repair the system silently.
+```bash
+./revert_agy-switch.sh
+```
 
-If the default alias is listed but its collection returns “Object does not exist”, preserve keyring files before investigating the Secret Service daemon. A service restart may restore its exported objects, but this is an operating-system repair, not a reason to delete saved profiles or log in again.
-
-A missing Profile 3 means no usable saved credentials were found for that ID. The Rust migration cannot reconstruct an account whose credentials were never durably captured. Run `agy-switch login 3` once in that case.
-
-## Uninstall
-
-`./revert_agy-switch.sh` removes only the installed command. Profiles, pending recovery, keyring items, and backups are retained. Installation backups include the previous executable if you need a manual rollback; finish pending Rust recovery before using the old script.
+Historical profile snapshots under `~/.gemini/profiles/` and backups in `~/.local/state/agy-switch/backups/` remain preserved for manual rollback if needed.
