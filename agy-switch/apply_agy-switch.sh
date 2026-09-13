@@ -1,38 +1,28 @@
 #!/usr/bin/env bash
-# ══════════════════════════════════════════════════════════════════
-# Antigravity CLI Account Switcher — Setup & Installation Script
-# ══════════════════════════════════════════════════════════════════
 set -euo pipefail
-
-echo "Installing Antigravity CLI Switcher (agy-switch)..."
-
-# 1. Dependency checks
-if ! command -v python3 &>/dev/null; then
-    echo "Error: 'python3' is required but not found in PATH." >&2
-    exit 1
+umask 077
+project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$project_dir"
+cargo test --locked
+cargo build --release --locked
+target_dir="$HOME/.local/bin"
+backup_dir="$HOME/.local/state/agy-switch/backups/$(date +%Y%m%d-%H%M%S)-$$"
+mkdir -p "$target_dir" "$backup_dir"
+if [[ -e "$target_dir/agy-switch" ]]; then
+  cp -p -- "$target_dir/agy-switch" "$backup_dir/agy-switch"
 fi
-
-if ! command -v secret-tool &>/dev/null; then
-    echo "Warning: 'secret-tool' (libsecret) not found." >&2
-    echo "Install via: sudo pacman -S libsecret" >&2
+if [[ -d "$HOME/.gemini/profiles" ]]; then
+  cp -a -- "$HOME/.gemini/profiles" "$backup_dir/profiles"
+  chmod -R go-rwx "$backup_dir/profiles"
 fi
-
-if ! command -v agy &>/dev/null; then
-    echo "Warning: 'agy' binary not found in PATH." >&2
+temporary_binary="$(mktemp "$target_dir/.agy-switch.XXXXXX")"
+trap 'rm -f -- "$temporary_binary"' EXIT
+install -m 755 target/release/agy-switch "$temporary_binary"
+mv -f -- "$temporary_binary" "$target_dir/agy-switch"
+"$target_dir/agy-switch" --version
+if ! "$target_dir/agy-switch" migrate; then
+  echo 'Installed; keyring copies pending. Run agy-switch migrate when the keyring is available.' >&2
 fi
-
-# 2. Install binary to ~/.local/bin
-TARGET_DIR="$HOME/.local/bin"
-mkdir -p "$TARGET_DIR"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cp "$SCRIPT_DIR/agy-switch" "$TARGET_DIR/agy-switch"
-chmod +x "$TARGET_DIR/agy-switch"
-
-echo ""
-echo "✓ Successfully installed 'agy-switch' to $TARGET_DIR/agy-switch"
-echo ""
-echo "Make sure $TARGET_DIR is in your PATH."
-echo "Run 'agy-switch status' to inspect configured profiles."
-echo "Run 'agy-switch login 2' or 'agy-switch login 3' to onboard additional accounts."
-echo "Run 'agy-switch <1|2|3>' to switch between accounts."
+"$target_dir/agy-switch" status
+echo "Installed for your account at $target_dir/agy-switch"
+echo "Previous command and profiles backed up in $backup_dir"

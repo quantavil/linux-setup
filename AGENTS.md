@@ -5,7 +5,7 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 
 ## Structure
 - `adguard-home/`: AdGuard Home setup scripts.
-- `agy-switch/`: Fast profile & account switcher for Antigravity CLI triple Pro accounts (`agy-switch <1|2|3>`).
+- `agy-switch/`: Rust account manager for Antigravity CLI (`agy-switch <id>`), with SQLite metadata, verified Secret Service writes, durable recovery, and preserved profile backups.
 - `aikular/`: Custom markdown note helper (Python parser/render scripts).
 - `cloudflare-warp/`: Cloudflare WARP (`wgcf`) setup guide.
 - `copyparty/`: Setup for file-sharing web server (`copyparty`).
@@ -23,6 +23,7 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 ## Conventions
 - Every module resides in its own subdirectory with an `apply_*.sh` installer and optional `revert_*.sh` uninstaller.
 - Single-binary CLI tools install to `~/.local/bin/`.
+- `agy-switch`: Build/install with `./apply_agy-switch.sh`; it installs the Rust release binary. The module's `agy-switch` file is a development launcher; `legacy/agy-switch.py` is reference only. Do not install either as the production command.
 - Minimal implementations; no bloated abstractions.
 
 ## Discoveries & Insights
@@ -32,11 +33,13 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 - Global Wayland voice typing: `wtype` injects transcribed text directly into focused Wayland inputs without clipboard paste.
 - Concurrent lock ownership: Use `HOLDS_LOCK` flag to prevent EXIT traps from deleting locks owned by other instances.
 - Antigravity CLI auth: Stored in Secret Service keyring under service `'gemini'`, username `'antigravity'`; `zalando/go-keyring` reads default/login collection only.
+- `agy-switch` v2: Saved credentials remain in private profile files, with separate persistent keyring copies. SQLite stores metadata only; `pending.json` holds recovery credentials. All credential backups are sensitive plaintext protected by permissions. Close running `agy` sessions before switch/login/recover; use `doctor` for diagnostics and `migrate` to verify keyring copies.
 - GNOME Keyring 50 GKeyFile corruption: Unescaped newlines in any secret fail `g_key_file_load_from_data`, dropping the collection from D-Bus and hanging `secret-tool store`. Fix: Escape newlines as `\n` and unlock default collection via D-Bus before store.
 
 ## Blunders
-- `agy-switch` profile metadata desync & overwrite: Reading stale `profile.json` before `token.json` masked account identity; `save_active_to_profile` clobbered profiles with foreign active tokens. Fix: Make `token.json` JWT payload authoritative for email and guard `save_active_to_profile` against mismatched emails.
-- `agy-switch` session collection desync: Storing with `--collection=session` bypassed default keyring; `agy` (`go-keyring`) only queries `default`, staying stuck on old account while `secret-tool lookup` falsely matched `session`. Fix: Target default keyring with `secret-tool store` and clear stale session items.
+- `agy-switch` profile metadata desync & overwrite: Never attribute refreshed credentials using the selected-profile marker alone. The Rust manager matches saved token identity before updating a profile.
+- `agy-switch` session collection desync: Session storage is volatile and ignored by agy's default-collection lookup. The Rust manager targets the exact persistent default collection, rejects ambiguous active entries, and replaces without clearing first. Never restore the old clear-before-write behavior.
+- `agy-switch` interrupted login: Persist captured credentials before the CLI exits, and report activation separately. Keep pending recovery records until activation or restoration succeeds; never print success after a failed write.
 - `jq: error: Cannot index boolean`: Outer `if` lacked `else .` returning false, `not .started` parsed as `(not) .started`. Fix: Wrapped as `(.started | not)`.
 - EXIT trap deleted other lock dirs: Unconditional lock cleanup deleted directories created by concurrent runs. Fix: Added `HOLDS_LOCK` ownership flag.
 - HTTP status check failed on 100 Continue: Reading first header line failed when 100 Continue preceded 200 OK. Fix: Parsed last status line via `awk`.
