@@ -1,6 +1,6 @@
 [package]
 name = "agy-switch"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 rust-version = "1.87"
 description = "Recoverable Antigravity CLI account switching"

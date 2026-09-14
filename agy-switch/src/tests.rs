@@ -17,6 +17,26 @@ fn real_keyring_restart() {
     );
     let service = crate::keyring::connect().unwrap();
     let backend = crate::keyring::Keyring::open(&service, false).unwrap();
+    // A different application can store multiline data in the shared collection.
+    // Exercise the daemon's serializer, not just our compact OAuth JSON.
+    let collection = service.get_default_collection().unwrap();
+    let attributes = std::collections::HashMap::from([("application", "agy-switch-regression")]);
+    let multiline = b"  synthetic secret\nsecond line\n\\n literal backslash\t\n";
+    if std::env::var("AGY_SWITCH_TEST_PHASE").unwrap() == "seed" {
+        collection
+            .create_item(
+                "Synthetic multiline secret",
+                attributes.clone(),
+                multiline,
+                true,
+                "text/plain",
+            )
+            .unwrap();
+    } else {
+        let items = collection.search_items(attributes).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].get_secret().unwrap(), multiline);
+    }
     let store = Store::open(&root.join("profiles-home")).unwrap();
     match std::env::var("AGY_SWITCH_TEST_PHASE").unwrap().as_str() {
         "seed" => {

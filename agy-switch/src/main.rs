@@ -27,7 +27,7 @@ pub enum Error {
     #[error("Saved credentials are invalid; original files were retained")]
     InvalidToken,
     #[error(
-        "Default Secret Service collection is missing or unavailable; saved profiles are intact. Run agy-switch doctor"
+        "Default Secret Service collection is missing or unavailable; saved profiles are intact. Check journalctl --user -u gnome-keyring-daemon.service. If it reports an invalid keyring format, see the GNOME Keyring repair instructions in linux-setup/agy-switch/README.md; recover requires a working keyring"
     )]
     KeyringUnavailable,
     #[error("Default keyring is locked or unlocking was cancelled")]

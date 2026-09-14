@@ -143,7 +143,7 @@ All state is preserved under `~/.gemini/profiles/` with strict POSIX permissions
 > Backup and recovery files contain plaintext OAuth bearer tokens protected by Unix filesystem permissions (`0700` dir / `0600` files). Automated snapshots stored under `~/.local/state/agy-switch/backups/` have the same security sensitivity.
 
 - **Offline Identity Extraction:** Decodes the unencrypted JWT payload from `id_token` directly in memory without making network calls or leaking tokens.
-- **GNOME Keyring 50 Fix:** JSON payloads are compacted into single-line strings before writing to D-Bus to prevent GKeyFile newline parser crashes.
+- **Compact Credentials:** OAuth JSON is compacted before storage. This reduces multiline writes from this CLI, but cannot fix the shared daemon's serializer or another application's multiline secrets. See the daemon fix below.
 - **Memory Zeroization:** Sensitive in-memory token buffers are scrubbed on drop.
 
 ---
@@ -187,10 +187,49 @@ It diagnoses:
 - Malformed token files, missing refresh tokens, or pending crash journals.
 
 ### Keyring Object Missing Error
-If the default collection lists an alias but reports `Object does not exist`, your GNOME Keyring daemon may have dropped collections. **Do not delete saved profile directories.** Restart the user daemon or run:
+If the default alias exists but its collection reports `Object does not exist`, inspect:
 ```bash
-agy-switch recover
+journalctl --user -u gnome-keyring-daemon.service
 ```
+
+**Do not delete saved profiles or pending recovery records.** `recover` needs a working default collection; repeating it or `doctor` cannot repair a malformed keyring. A restart can temporarily reload a repaired file, but does not prevent the next corrupt save.
+
+### Persistent GNOME Keyring 50.0 serializer fix
+
+The 50.0 [textual writer](https://github.com/GNOME/gnome-keyring/blob/50.0/pkcs11/secret-store/gkm-secret-textual.c) calls `g_key_file_set_value()` for secrets, while its reader calls `g_key_file_get_string()`. In an unencrypted keyring, multiline secrets can invalidate the whole file; backslash escapes can also change on reload. GLib requires [`g_key_file_set_string()`](https://docs.gtk.org/glib/method.KeyFile.set_value.html) for values needing escaping. Any application sharing the collection can trigger this, even when `agy-switch` writes compact JSON.
+
+`keyring-fix/escape-textual-secrets.patch` changes that one writer call. The installer builds the pinned official GNOME 50.0 archive (SHA-256 verified), tests synthetic credentials on a private bus, and installs a user-scoped daemon. It overrides both systemd and D-Bus activation, so the fix survives login/reboot. Distribution binaries, libraries, and PAM files remain package-managed.
+
+On Arch, install missing build dependencies from official repositories:
+
+```bash
+sudo pacman -S --needed base-devel meson ninja glib2-devel gcr libgcrypt libcap-ng p11-kit systemd python-gobject
+```
+
+Close `agy`, then install the daemon fix:
+
+```bash
+./apply_keyring-fix.sh
+```
+
+For a **known unescaped default keyring written by the stock 50.0 daemon**, use this once instead:
+
+```bash
+./apply_keyring-fix.sh --repair-unescaped-default
+agy-switch recover
+agy-switch doctor
+```
+
+That option stops and temporarily blocks service activation, backs up the whole keyring directory, and converts raw textual secrets into the daemon's existing hexadecimal `binary-secret` format without logging their contents. It refuses ambiguous input. **Do not run raw-secret conversion on correctly escaped keyrings.** Encrypted keyrings do not use the affected writer and are not candidates for conversion. Unlock the collection if prompted afterward.
+
+Installed files:
+
+- `~/.local/lib/agy-switch/gnome-keyring-50.0/gnome-keyring-daemon`
+- `~/.config/systemd/user/gnome-keyring-daemon.service.d/agy-switch-textual-fix.conf`
+- User D-Bus activation files in `~/.local/share/dbus-1/services/`
+- Private keyring and activation-file backups in `~/.local/state/agy-switch/keyring-fix/`
+
+This is a local fix pinned to 50.0, not an upstream package update. Review it when upgrading GNOME Keyring or its libraries; the user override continues selecting this binary. After a distribution release passes the regression test, run `./revert_keyring-fix.sh` to return to the distribution daemon. It retains credentials and backups; pre-existing user activation overrides can be restored from the backup if needed. Other desktop environments with separate PAM/autostart launch paths need their activation paths checked too.
 
 ---
 
@@ -208,9 +247,16 @@ cargo clippy --locked --all-targets -- -D warnings
 # Verify style compliance
 cargo fmt --check
 
-# Run daemon restart integration test
+# Regression against the distribution daemon (expected to fail on stock 50.0)
 bash tests/keyring-restart.sh
+
+# Run against the patched daemon, including repair of a stock-written fixture
+AGY_SWITCH_TEST_DAEMON="$HOME/.local/lib/agy-switch/gnome-keyring-50.0/gnome-keyring-daemon" bash tests/keyring-restart.sh
+AGY_SWITCH_TEST_DAEMON="$HOME/.local/lib/agy-switch/gnome-keyring-50.0/gnome-keyring-daemon" AGY_SWITCH_TEST_REPAIR=1 bash tests/keyring-restart.sh
+python tests/test_keyring_repair.py
 ```
+
+The private bus disables host service activation and verifies the daemon executable. An empty C-string password explicitly exercises the **unencrypted** format; a newline password would test encryption and miss this bug. The fixture checks byte-for-byte survival of another application's multiline secret as well as profile switching and recovery through two restarts.
 
 ---
 
