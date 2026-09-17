@@ -1,0 +1,66 @@
+% package-manager, arch, user-packages
+
+# Fuzzy search all user-installed packages (with live package info)
+pacman -Qe | fzf --preview 'pacman -Qi {1}'
+
+# List explicitly installed AUR packages only
+pacman -Qem
+
+# List explicitly installed Official repository packages only
+pacman -Qen
+
+# List top-level standalone packages (not required by any other app)
+pacman -Qet
+
+# Interactive remove user package (Tab to multi-select with preview)
+pacman -Qeq | fzf -m --prompt="Select to remove > " --preview 'pacman -Qi {1}' | xargs -r shelly remove
+
+# Search and install package from repos (with description preview)
+pacman -Slq | fzf --prompt="Install > " --preview 'pacman -Si {}' | xargs -r shelly install
+
+# Remove pacman database lock file
+sudo rm -f /var/lib/pacman/db.lck
+
+# Review and merge .pacnew system configuration files
+sudo pacdiff -s
+
+# Backup explicitly installed packages to TOML
+shelly backup
+
+# Downgrade a package to a previously cached version
+shelly downgrade <package_name>
+
+$ package_name: pacman -Qq
+
+% fzf, git
+
+# Interactive switch git branch (local or remote tracking)
+git branch --all --format='%(refname:short)' | sed 's|^origin/||' | sort -u | fzf --preview 'git log --oneline --color=always -n 10 {}' | xargs -r git switch
+
+# Interactive browse git commit history (with live diff preview)
+git log --oneline --color=always | fzf --ansi --preview 'git show --color=always {1}'
+
+# Interactive stage modified files (Tab to select multiple)
+git status -s | fzf -m --prompt="Stage files > " --preview 'git diff --color=always {2}' | cut -c4- | xargs -r git add
+
+# Interactive discard uncommitted changes in files
+git status -s | fzf -m --prompt="Discard changes > " --preview 'git diff --color=always {2}' | cut -c4- | xargs -r git restore
+
+% fzf, search, files
+
+# Interactive fuzzy find file with syntax preview and open in editor
+fzf --preview 'bat --style=numbers --color=always {}' | xargs -r ${EDITOR:-micro}
+
+# Interactive search text inside files (ripgrep with live line preview)
+rg --line-number --no-heading --color=always "" | fzf --ansi --delimiter : --preview 'bat --style=numbers --color=always {1} --highlight-line {2}' | awk -F: '{print "+" $2 " " $1}' | xargs -r ${EDITOR:-micro}
+
+% system, network
+
+# Interactive open ports and listening services inspector
+sudo ss -tulpn | fzf --header-lines=1 --prompt="Filter Ports/Apps > "
+
+# Restart PipeWire audio engine (fixes audio glitches)
+systemctl --user restart pipewire wireplumber
+
+# Check public external IP address
+curl -s ifconfig.me
