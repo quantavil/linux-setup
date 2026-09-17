@@ -1,5 +1,6 @@
 #!/bin/bash
 # MPV material-osc + thumbfast Setup Script
+set -euo pipefail
 
 echo "========================================="
 echo "  MPV material-osc + thumbfast Setup"
@@ -8,7 +9,7 @@ echo ""
 
 # --- 1. Prerequisite checks ---
 echo "[1/5] Checking prerequisites..."
-for cmd in curl unzip; do
+for cmd in curl unzip mpv; do
     if ! command -v "$cmd" &> /dev/null; then
         echo "Error: Required command '$cmd' is not installed. Please install it first." >&2
         exit 1
@@ -39,24 +40,26 @@ fi
 
 # --- 3. Create config directories ---
 echo "[3/5] Creating mpv config directories..."
-mkdir -p ~/.config/mpv/scripts
+mkdir -p ~/.config/mpv/scripts ~/.config/mpv/fonts
 
 # --- 4. Install material-osc & thumbfast ---
 echo "[4/5] Fetching and installing material-osc & thumbfast..."
-LATEST_ZIP_URL=$(curl -s https://api.github.com/repos/brahmkshatriya/material-osc/releases/latest | grep "browser_download_url" | cut -d '"' -f 4)
+LATEST_ZIP_URL=$(curl -s https://api.github.com/repos/brahmkshatriya/material-osc/releases/latest | grep "browser_download_url" | cut -d '"' -f 4 || true)
 
 if [ -z "$LATEST_ZIP_URL" ]; then
-    echo "Error: Could not retrieve the latest release for material-osc." >&2
-    exit 1
+    LATEST_ZIP_URL="https://github.com/brahmkshatriya/material-osc/releases/latest/download/material-osc.zip"
 fi
 
 echo "Downloading material-osc from $LATEST_ZIP_URL..."
-curl -L "$LATEST_ZIP_URL" -o /tmp/material-osc.zip
-unzip -o /tmp/material-osc.zip -d ~/.config/mpv/
-rm -f /tmp/material-osc.zip
+TMP_ZIP=$(mktemp /tmp/material-osc-XXXXXX.zip)
+trap 'rm -f "$TMP_ZIP"' EXIT
+curl -fsSL "$LATEST_ZIP_URL" -o "$TMP_ZIP"
+unzip -o "$TMP_ZIP" -d ~/.config/mpv/
+rm -f "$TMP_ZIP"
+trap - EXIT
 
 echo "Downloading thumbfast..."
-curl -L https://raw.githubusercontent.com/po5/thumbfast/master/thumbfast.lua -o ~/.config/mpv/scripts/thumbfast.lua
+curl -fsSL https://raw.githubusercontent.com/po5/thumbfast/master/thumbfast.lua -o ~/.config/mpv/scripts/thumbfast.lua
 
 # --- 5. Configure mpv.conf ---
 echo "[5/5] Writing mpv.conf..."

@@ -33,10 +33,10 @@ sudo pacman -S mpv
 
 Create the configuration directories:
 ```bash
-mkdir -p ~/.config/mpv/scripts
+mkdir -p ~/.config/mpv/scripts ~/.config/mpv/fonts
 ```
 
-Download the latest version of **material-osc** from the [GitHub Releases](https://github.com/brahmkshatriya/material-osc/releases) page, extract it, and place `material-osc.lua` and the `material-osc/` folder inside `~/.config/mpv/scripts/`.
+Download the latest version of **material-osc** from the [GitHub Releases](https://github.com/brahmkshatriya/material-osc/releases) page and extract it directly into `~/.config/mpv/` (which places `material-osc.lua` under `scripts/` and fonts under `fonts/`).
 
 Download **thumbfast** for on-the-fly timeline thumbnail previews:
 ```bash
@@ -65,10 +65,10 @@ The final layout of your `~/.config/mpv` directory should look like this:
 ```text
 mpv/
 ├── mpv.conf
+├── fonts/
+│   ├── material-osc_google_sans_flex.ttf
+│   └── material-osc_icons.otf
 └── scripts/
     ├── material-osc.lua
-    ├── thumbfast.lua
-    └── material-osc/
-        ├── GoogleSansFlex.ttf
-        └── MaterialSymbolsRoundedUnfilled.ttf
+    └── thumbfast.lua
 ```
