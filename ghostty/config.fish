@@ -18,6 +18,18 @@ if status is-interactive
 
     # Navi interactive cheatsheet widget (Ctrl+G)
     type -q navi && navi widget fish | source
+
+    # Modern CLI aliases (eza, bat)
+    if type -q eza
+        alias ls="eza --icons --group-directories-first"
+        alias ll="eza -lh --icons --group-directories-first"
+        alias la="eza -lah --icons --group-directories-first"
+        alias tree="eza --tree --icons --level=2"
+    end
+
+    if type -q bat
+        alias cat="bat --paging=never"
+    end
 end
 
 # ==============================================================================

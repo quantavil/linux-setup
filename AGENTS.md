@@ -23,6 +23,7 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 ## Conventions
 - Every module resides in its own subdirectory with an `apply_*.sh` installer and optional `revert_*.sh` uninstaller.
 - Single-binary CLI tools install to `~/.local/bin/`.
+- Dotfiles: Live user configurations and dotfiles are managed via `chezmoi` backed by the private GitHub repository `quantavil/dotfiles` (`~/.local/share/chezmoi`).
 - `agy-switch`: Build/install with `./apply_agy-switch.sh`; it installs the Rust release binary. The module's `agy-switch` file is a development launcher; `legacy/agy-switch.py` is reference only. Do not install either as the production command.
 - Minimal implementations; no bloated abstractions.
 
