@@ -2,19 +2,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GHOSTTY_DIR="$HOME/.config/ghostty"
+RIO_DIR="$HOME/.config/rio"
 FISH_DIR="$HOME/.config/fish"
 NAVI_CHEATS_DIR="$HOME/.local/share/navi/cheats"
 BASHRC="$HOME/.bashrc"
 
-echo "=== Ghostty + Shell Revert Script ==="
+echo "=== Rio + Shell Revert Script ==="
 echo ""
 
 CONFIRM=""
 if [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]]; then
     CONFIRM="y"
 else
-    read -rp "Are you sure you want to revert Ghostty, Fish, Bash, and Navi cheatsheet configs? (y/N): " CONFIRM
+    read -rp "Are you sure you want to revert Rio, Fish, Bash, and Navi cheatsheet configs? (y/N): " CONFIRM
 fi
 
 if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
@@ -22,12 +22,12 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# Revert Ghostty config
-LATEST_GHOSTTY_BAK=$(find "$GHOSTTY_DIR" -name "config.bak_*" 2>/dev/null | sort | tail -n 1)
-if [ -n "$LATEST_GHOSTTY_BAK" ] && [ -f "$LATEST_GHOSTTY_BAK" ]; then
-    echo "Restoring Ghostty config from $LATEST_GHOSTTY_BAK..."
-    cp "$LATEST_GHOSTTY_BAK" "$GHOSTTY_DIR/config"
-    echo "✓ Ghostty config restored."
+# Revert Rio config
+LATEST_RIO_BAK=$(find "$RIO_DIR" -name "config.toml.bak_*" 2>/dev/null | sort | tail -n 1)
+if [ -n "$LATEST_RIO_BAK" ] && [ -f "$LATEST_RIO_BAK" ]; then
+    echo "Restoring Rio config from $LATEST_RIO_BAK..."
+    cp "$LATEST_RIO_BAK" "$RIO_DIR/config.toml"
+    echo "✓ Rio config restored."
 fi
 
 # Revert Fish config

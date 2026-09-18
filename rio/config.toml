@@ -1,0 +1,98 @@
+# Rio Terminal Configuration - Material 3 'dankcolors' Warm Dark
+# Hardware-accelerated GPU terminal emulator with Vulkan backend
+
+margin = [12]
+scrollback-history-limit = 10000
+confirm-before-quit = false
+hide-mouse-cursor-when-typing = true
+copy-on-select = true
+draw-bold-text-with-light-colors = false
+
+[fonts]
+family = "MesloLGS Nerd Font Mono"
+size = 16.0
+
+[window]
+mode = "Windowed"
+decorations = "Disabled"
+opacity = 0.8
+blur = false
+
+[cursor]
+shape = "block"
+blinking = true
+blinking-interval = 800
+
+[effects]
+trail-cursor = true
+trail-cursor-color = "#ffb3ae"
+
+[navigation]
+mode = "Tab"
+clickable = true
+use-current-path = true
+use-split = true
+unfocused-split-opacity = 0.7
+unfocused-split-fill = "#44464f"
+
+[colors]
+background = "#1e100f"
+foreground = "#f9dcda"
+cursor = "#ffb3ae"
+vi-cursor = "#ffb3ae"
+selection-background = "#930014"
+selection-foreground = "#f9dcda"
+split = "#44464f"
+split-active = "#ffb3ae"
+tabs = "#494140"
+tabs-active = "#ffb3ae"
+search-match-background = "#763531"
+search-match-foreground = "#fff0ef"
+search-focused-match-background = "#930014"
+search-focused-match-foreground = "#fff8f8"
+
+# Standard ANSI Colors
+black = "#1e100f"
+red = "#ff7372"
+green = "#9aff7f"
+yellow = "#ffe472"
+blue = "#f29b95"
+magenta = "#763531"
+cyan = "#ffb3ae"
+white = "#fff0ef"
+
+# Bright ANSI Colors (prefixed with 'light-' in Rio)
+light-black = "#494140"
+light-red = "#ffa09f"
+light-green = "#b8ffa5"
+light-yellow = "#ffeda5"
+light-blue = "#ffbeba"
+light-magenta = "#ffc9c6"
+light-cyan = "#ffdcda"
+light-white = "#fff8f8"
+
+# Key bindings (Rio modifier syntax requires 'control', not 'ctrl')
+[bindings]
+keys = [
+    # Window and tab management
+    { key = "n", with = "control | shift", action = "CreateWindow" },
+    { key = "t", with = "control | shift", action = "CreateTab" },
+    { key = "w", with = "control | shift", action = "CloseSplitOrTab" },
+
+    # Splits management
+    { key = "d", with = "control | shift", action = "SplitRight" },
+    { key = "e", with = "control | shift", action = "SplitDown" },
+    { key = "]", with = "control | shift", action = "SelectNextSplit" },
+    { key = "[", with = "control | shift", action = "SelectPrevSplit" },
+
+    # Font size scaling
+    { key = "+", with = "control", action = "IncreaseFontSize" },
+    { key = "=", with = "control", action = "IncreaseFontSize" },
+    { key = "-", with = "control", action = "DecreaseFontSize" },
+    { key = "0", with = "control", action = "ResetFontSize" },
+
+    # Clipboard & search
+    { key = "c", with = "control | shift", action = "Copy" },
+    { key = "v", with = "control | shift", action = "Paste" },
+    { key = "f", with = "control | shift", action = "SearchForward" },
+]

@@ -4,13 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 
-echo "=== Ghostty, Fish, Bash & Navi Setup Installer ==="
+echo "=== Rio, Fish, Bash & Navi Setup Installer ==="
 echo ""
 
 # Check dependencies
 echo "Checking installed tools..."
-for cmd in ghostty fish navi fzf shelly eza bat zoxide yazi; do
-    if command -v "$cmd" &>/dev/null; then
+for cmd in rio fish navi fzf shelly eza bat zoxide yazi; do
+    if command -v "$cmd" >/dev/null 2>&1; then
         echo "  ✓ $cmd"
     else
         echo "  ⚠ $cmd is not found in PATH"
@@ -18,19 +18,19 @@ for cmd in ghostty fish navi fzf shelly eza bat zoxide yazi; do
 done
 echo ""
 
-# 1. Setup Ghostty Config
-GHOSTTY_DIR="$HOME/.config/ghostty"
-mkdir -p "$GHOSTTY_DIR"
+# 1. Setup Rio Config (~/.config/rio/config.toml)
+RIO_DIR="$HOME/.config/rio"
+mkdir -p "$RIO_DIR"
 
-if [ -f "$GHOSTTY_DIR/config" ]; then
-    echo "Backing up existing Ghostty config to $GHOSTTY_DIR/config.bak_$TIMESTAMP..."
-    cp "$GHOSTTY_DIR/config" "$GHOSTTY_DIR/config.bak_$TIMESTAMP"
+if [ -f "$RIO_DIR/config.toml" ]; then
+    echo "Backing up existing Rio config to $RIO_DIR/config.toml.bak_$TIMESTAMP..."
+    cp "$RIO_DIR/config.toml" "$RIO_DIR/config.toml.bak_$TIMESTAMP"
 fi
-echo "Installing Ghostty config..."
-cp "$SCRIPT_DIR/config" "$GHOSTTY_DIR/config"
-echo "✓ Ghostty config installed."
+echo "Installing Rio config..."
+cp "$SCRIPT_DIR/config.toml" "$RIO_DIR/config.toml"
+echo "✓ Rio config installed."
 
-# 2. Setup Fish Config
+# 2. Setup Fish Config (~/.config/fish/config.fish)
 FISH_DIR="$HOME/.config/fish"
 mkdir -p "$FISH_DIR"
 
@@ -42,7 +42,7 @@ echo "Installing Fish config..."
 cp "$SCRIPT_DIR/config.fish" "$FISH_DIR/config.fish"
 echo "✓ Fish config installed."
 
-# 3. Setup Navi Cheatsheets
+# 3. Setup Navi Cheatsheets (~/.local/share/navi/cheats/)
 NAVI_CHEATS_DIR="$HOME/.local/share/navi/cheats"
 mkdir -p "$NAVI_CHEATS_DIR"
 
@@ -57,7 +57,7 @@ if [ -d "$SCRIPT_DIR/cheats" ]; then
 fi
 echo "✓ Navi cheatsheets installed."
 
-# 4. Setup Navi Config (2-column view)
+# 4. Setup Navi Config (~/.config/navi/config.yaml)
 NAVI_CONFIG_DIR="$HOME/.config/navi"
 mkdir -p "$NAVI_CONFIG_DIR"
 if [ -f "$NAVI_CONFIG_DIR/config.yaml" ]; then
@@ -69,7 +69,7 @@ if [ -f "$SCRIPT_DIR/navi.yaml" ]; then
     echo "✓ Navi config installed (2-column layout)."
 fi
 
-# 4. Setup Bash Config (~/.bashrc)
+# 5. Setup Bash Config (~/.bashrc)
 BASHRC="$HOME/.bashrc"
 if [ -f "$BASHRC" ]; then
     echo "Backing up existing ~/.bashrc to $HOME/.bashrc.bak_$TIMESTAMP..."
@@ -79,39 +79,30 @@ fi
 cat << 'EOF' > "$BASHRC"
 # ~/.bashrc
 
-# If not running interactively, don't do anything
 [[ $- != *i* ]] && return
 
-# Shell Prompt & PATH
 PS1='[\u@\h \W]\$ '
 export PATH="$HOME/.local/bin:$PATH"
 
-# ------------------------------------------------------------------------------
-# 1. Interactive Tool Hooks
-# ------------------------------------------------------------------------------
-command -v zoxide &>/dev/null && eval "$(zoxide init bash)"
+# Interactive tool hooks
+command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init bash)"
 [ -f /usr/share/fzf/key-bindings.bash ] && source /usr/share/fzf/key-bindings.bash
-command -v navi &>/dev/null && eval "$(navi widget bash)"
+command -v navi >/dev/null 2>&1 && eval "$(navi widget bash)"
 
-# ------------------------------------------------------------------------------
-# 2. Modern CLI Replacements
-# ------------------------------------------------------------------------------
-if command -v eza &>/dev/null; then
+# Modern CLI replacements
+if command -v eza >/dev/null 2>&1; then
     alias ls="eza --icons --group-directories-first"
     alias ll="eza -l --icons --group-directories-first"
     alias la="eza -la --icons --group-directories-first"
 fi
 
-command -v bat &>/dev/null && alias cat="bat"
+command -v bat >/dev/null 2>&1 && alias cat="bat"
 
-# ------------------------------------------------------------------------------
-# 3. Essential Shortcuts
-# ------------------------------------------------------------------------------
 alias ..="cd .."
 alias ...="cd ../.."
 
 # Daily system maintenance (Shelly)
-if command -v shelly &>/dev/null; then
+if command -v shelly >/dev/null 2>&1; then
     alias update="shelly upgrade all"
     alias cleanup="shelly purify standard -o"
 fi

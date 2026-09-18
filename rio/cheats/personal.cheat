@@ -59,8 +59,8 @@ rg --line-number --no-heading --color=always "" | fzf --ansi --delimiter : --pre
 # Interactive open ports and listening services inspector
 sudo ss -tulpn | fzf --header-lines=1 --prompt="Filter Ports/Apps > "
 
-# Restart PipeWire audio engine (fixes audio glitches)
-systemctl --user restart pipewire wireplumber
+# Restart PipeWire and audio subsystem
+systemctl --user restart pipewire pipewire-pulse wireplumber
 
 # Check public external IP address
 curl -s ifconfig.me

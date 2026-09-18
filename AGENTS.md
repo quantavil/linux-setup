@@ -10,13 +10,13 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 - `cloudflare-warp/`: Cloudflare WARP (`wgcf`) setup guide.
 - `copyparty/`: Setup for file-sharing web server (`copyparty`).
 - `dolphin-tag/`: Tagging support scripts for Dolphin file manager.
-- `ghostty/`: Setup/config files for Ghostty terminal, Fish shell, Shelly package manager, and Navi cheatsheets.
 - `git-autosquash/`: Git auto-squashing scripts.
 - `git-autosync/`: Automated git sync utilities.
 - `groq-ai/`: Unified Groq CLI assistant & global Wayland voice typing (`ai -v`).
 - `kde-shortcuts/`: KDE Plasma keyboard shortcuts cheatsheet.
 - `mpv/`: MPV media player configurations (`material-osc`, `thumbfast`).
 - `ms-fonts/`: Microsoft TrueType fonts installation helpers.
+- `rio/`: Setup/config files for Rio hardware-accelerated GPU terminal (Material 3 `dankcolors`, Vulkan backend, tabs/splits), Fish shell, Shelly package manager, and Navi cheatsheets.
 - `strata/`: Strata file manager PKGBUILD and packaging setup for clean pacman updates.
 - `tauri-webkit-lag/`: Fix for laggy Tauri/WebKitGTK apps (DMA-BUF renderer + KWin latency).
 
@@ -38,6 +38,10 @@ Modular collection of standalone desktop utilities, configuration scripts, and s
 - GNOME Keyring 50 GKeyFile corruption: The unencrypted writer uses `g_key_file_set_value` but the reader uses `g_key_file_get_string`. Any application's multiline/backslash secret can corrupt the shared keyring; compact OAuth JSON and daemon restarts are insufficient. `agy-switch/apply_keyring-fix.sh` builds a one-line `g_key_file_set_string` patch and installs user systemd/D-Bus activation overrides. `--repair-unescaped-default` is ONLY for raw textual files written by the stock 50.0 daemon; it backs up and converts secrets offline to the existing binary-secret format. Never apply raw conversion to already escaped keyrings. See module README for update/rollback instructions.
 - Keyring regression tests must use an empty C-string password (`printf '\0'`), not `printf '\n'` (which creates an encrypted keyring and misses the bug). Disable host service activation on the private test bus and verify the candidate daemon executable.
 - SIGPIPE under pipefail: In bash with `set -o pipefail`, pipelines like `producer | grep -q` cause the producer to terminate with 141 (SIGPIPE) when `grep -q` closes the pipe early on match. Use `grep ... >/dev/null` instead of `grep -q` to consume normally without breaking `pipefail`.
+- Rio modifier keyword: requires `control` (not `ctrl`); `with = "ctrl | shift"` silently drops control.
+- Rio ANSI bright colors use prefix `light-*` (not `bright-*`).
+- Niri Wayland alpha blending: requires `draw-border-with-background false` in window rules, or Niri renders an opaque backing rectangle.
+- Margin syntax uses `margin = [12]`, and all root parameters must precede table headers in TOML.
 
 ## Blunders
 - `agy-switch` profile metadata desync & overwrite: Never attribute refreshed credentials using the selected-profile marker alone. The Rust manager matches saved token identity before updating a profile.
